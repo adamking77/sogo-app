@@ -4,6 +4,7 @@ import {
   Check,
   Database,
   FolderOpen,
+  FolderTree,
   Maximize2,
   Minus,
   Play,
@@ -15,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 
+import { FilesPanel } from "@/components/FilesPanel";
 import { Settings } from "@/components/Settings";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { TabStrip } from "@/components/TabStrip";
@@ -44,7 +46,7 @@ function App() {
   } = useSessionStore();
   const idleTimersRef = useRef<Record<string, number>>({});
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
-  const [activePanel, setActivePanel] = useState<"vault" | "claude" | null>(null);
+  const [activePanel, setActivePanel] = useState<"vault" | "claude" | "files" | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(() => localStorage.getItem("sogo.windowPinned") === "true");
   const { paletteName, fontSize } = useThemeStore();
@@ -282,7 +284,7 @@ function App() {
     [updateTab],
   );
 
-  const togglePanel = useCallback((panel: "vault" | "claude") => {
+  const togglePanel = useCallback((panel: "vault" | "claude" | "files") => {
     setActivePanel((current) => (current === panel ? null : panel));
   }, []);
 
@@ -362,6 +364,15 @@ function App() {
               title="Skills"
             >
               <Wrench size={13} />
+            </button>
+            <button
+              className={`flex h-7 w-7 items-center justify-center rounded transition-colors duration-150 hover:bg-cc-surface-strong ${
+                activePanel === "files" ? "text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
+              }`}
+              onClick={() => togglePanel("files")}
+              title="Files"
+            >
+              <FolderTree size={13} />
             </button>
 
             {/* Separator */}
@@ -455,6 +466,8 @@ function App() {
           onClose={() => setActivePanel(null)}
           onActivateSkill={activateSkill}
           tauriRuntime={tauriRuntime}
+          cwd={activeTab?.cwd ?? ""}
+          folderChosen={activeTab?.folderChosen ?? false}
         />
       ) : null}
     </div>
@@ -603,14 +616,26 @@ function PanelWindow({
   onClose,
   onActivateSkill,
   tauriRuntime,
+  cwd,
+  folderChosen,
 }: {
-  activePanel: "vault" | "claude";
-  onPanelChange: (panel: "vault" | "claude" | null) => void;
+  activePanel: "vault" | "claude" | "files";
+  onPanelChange: (panel: "vault" | "claude" | "files" | null) => void;
   onClose: () => void;
   onActivateSkill: (skillName: string) => void;
   tauriRuntime: boolean;
+  cwd: string;
+  folderChosen: boolean;
 }) {
   const dragHandler = useDragHandler(tauriRuntime);
+
+  const tabClass = (panel: "vault" | "claude" | "files") =>
+    `flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md text-xs transition-colors duration-150 ${
+      activePanel === panel
+        ? "bg-cc-surface-strong text-cc-foreground"
+        : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
+    }`;
+
   return (
     <aside className="relative hidden h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95 min-[860px]:flex">
       <div
@@ -623,37 +648,33 @@ function PanelWindow({
         data-tauri-drag-region
         onMouseDown={dragHandler}
       >
-        <button
-          className={`flex h-8 flex-1 items-center justify-center gap-2 rounded-md text-xs ${
-            activePanel === "vault"
-              ? "bg-cc-surface-strong text-cc-foreground"
-              : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
-          }`}
-          onClick={() => onPanelChange("vault")}
-        >
-          <Database size={14} />
+        <button className={tabClass("files")} onClick={() => onPanelChange("files")}>
+          <FolderTree size={13} />
+          Files
+        </button>
+        <button className={tabClass("vault")} onClick={() => onPanelChange("vault")}>
+          <Database size={13} />
           Vault
         </button>
-        <button
-          className={`flex h-8 flex-1 items-center justify-center gap-2 rounded-md text-xs ${
-            activePanel === "claude"
-              ? "bg-cc-surface-strong text-cc-foreground"
-              : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
-          }`}
-          onClick={() => onPanelChange("claude")}
-        >
-          <Wrench size={14} />
-          Claude
+        <button className={tabClass("claude")} onClick={() => onPanelChange("claude")}>
+          <Wrench size={13} />
+          Skills
         </button>
-      <button
-        className="ml-1 flex h-8 w-8 items-center justify-center rounded-md text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-        onClick={onClose}
-        title="Close panel"
-      >
-        <X size={14} />
-      </button>
+        <button
+          className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
+          onClick={onClose}
+          title="Close panel"
+        >
+          <X size={13} />
+        </button>
       </div>
-      {activePanel === "vault" ? <VaultPanel /> : <SkillsPanel onActivateSkill={onActivateSkill} />}
+      {activePanel === "vault" ? (
+        <VaultPanel />
+      ) : activePanel === "claude" ? (
+        <SkillsPanel onActivateSkill={onActivateSkill} />
+      ) : (
+        <FilesPanel cwd={cwd} folderChosen={folderChosen} />
+      )}
       <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthEast" />
     </aside>
   );

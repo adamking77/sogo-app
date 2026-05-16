@@ -30,3 +30,9 @@ export interface ClaudeInventory {
   skills: SkillSummary[];
   mcpServers: McpServerSummary[];
 }
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+}

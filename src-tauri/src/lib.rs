@@ -6,6 +6,49 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FileEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[tauri::command]
+fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {path}"));
+    }
+
+    const SKIP: &[&str] = &[
+        "node_modules", "target", ".git", "dist", ".next",
+        "__pycache__", ".turbo", ".cache", "build",
+    ];
+
+    let mut entries: Vec<FileEntry> = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if SKIP.contains(&name.as_str()) {
+                return None;
+            }
+            let path = entry.path().to_string_lossy().to_string();
+            let is_dir = entry.file_type().ok()?.is_dir();
+            Some(FileEntry { name, path, is_dir })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+
+    Ok(entries)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RuntimeConfig {
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
@@ -207,7 +250,8 @@ pub fn run() {
             pty::latest_claude_session_id,
             default_session_cwd,
             read_runtime_config,
-            read_claude_inventory
+            read_claude_inventory,
+            list_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sogo Desktop");
