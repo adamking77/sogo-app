@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import logoSvg from "@/assets/logo.svg";
 import {
+  Check,
   Database,
-  EyeOff,
+  FolderOpen,
   Maximize2,
   Minus,
   Play,
@@ -285,6 +286,29 @@ function App() {
     setActivePanel((current) => (current === panel ? null : panel));
   }, []);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey) return;
+      if (e.key === "n" && !e.shiftKey) {
+        e.preventDefault();
+        void newTab();
+        return;
+      }
+      if (e.key === "w") {
+        e.preventDefault();
+        if (activeTab) void closeTab(activeTab.id);
+        return;
+      }
+      const digit = parseInt(e.key, 10);
+      if (digit >= 1 && digit <= 9 && tabs[digit - 1]) {
+        e.preventDefault();
+        setActiveTabId(tabs[digit - 1].id);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [newTab, closeTab, activeTab, tabs, setActiveTabId]);
+
   const dragHandler = useDragHandler(tauriRuntime);
 
   return (
@@ -319,62 +343,53 @@ function App() {
             />
           </div>
 
-          <div className="flex w-52 shrink-0 items-center justify-end gap-1 px-2">
+          <div className="flex shrink-0 items-center gap-0.5 px-2">
+            {/* Panel toggles */}
             <button
-              className={`flex h-7 w-7 items-center justify-center rounded hover:bg-cc-surface-strong ${
+              className={`flex h-7 w-7 items-center justify-center rounded transition-colors duration-150 hover:bg-cc-surface-strong ${
                 activePanel === "vault" ? "text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
               }`}
               onClick={() => togglePanel("vault")}
-              title={activePanel === "vault" ? "Hide vault" : "Show vault"}
+              title="Vault"
             >
-              <Database size={14} />
+              <Database size={13} />
             </button>
             <button
-              className={`flex h-7 w-7 items-center justify-center rounded hover:bg-cc-surface-strong ${
+              className={`flex h-7 w-7 items-center justify-center rounded transition-colors duration-150 hover:bg-cc-surface-strong ${
                 activePanel === "claude" ? "text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
               }`}
               onClick={() => togglePanel("claude")}
-              title={activePanel === "claude" ? "Hide Claude inventory" : "Show Claude inventory"}
+              title="Skills"
             >
-              <Wrench size={14} />
+              <Wrench size={13} />
             </button>
+
+            {/* Separator */}
+            <span className="mx-1.5 h-3.5 w-px bg-cc-border" />
+
+            {/* Window controls */}
             <button
-              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-              onClick={interruptActive}
-              title="Interrupt"
-              disabled={!activeTab}
-            >
-              <Power size={14} />
-            </button>
-            <button
-              className={`flex h-7 w-7 items-center justify-center rounded hover:bg-cc-surface-strong ${
+              className={`flex h-7 w-7 items-center justify-center rounded transition-colors duration-150 hover:bg-cc-surface-strong ${
                 pinned ? "text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
               }`}
               onClick={() => setPinned((current) => !current)}
-              title={pinned ? "Unpin window" : "Pin window on top"}
+              title={pinned ? "Unpin" : "Pin on top"}
             >
-              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+              {pinned ? <PinOff size={13} /> : <Pin size={13} />}
             </button>
             <button
-              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-              onClick={() => runWindowAction("hide")}
-              title="Hide window"
-            >
-              <EyeOff size={14} />
-            </button>
-            <button
-              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
               onClick={() => runWindowAction("minimize")}
               title="Minimize"
             >
-              <Minus size={14} />
+              <Minus size={13} />
             </button>
             <button
-              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+              className="flex h-7 w-7 items-center justify-center rounded text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
               onClick={() => runWindowAction("toggleMaximize")}
-              title="Maximize"
+              title="Expand"
             >
-              <Maximize2 size={14} />
+              <Maximize2 size={13} />
             </button>
           </div>
         </header>
@@ -390,11 +405,14 @@ function App() {
               />
             ) : null}
             <div className="relative min-h-0 flex-1 bg-[color:var(--cc-background)]">
+              {lastError ? (
+                <ErrorToast message={lastError} onDismiss={() => setLastError(null)} />
+              ) : null}
               {tabs.length === 0 ? (
                 <EmptyState
                   runtimeReady={tauriRuntime}
                   onNewTab={newTab}
-                  error={lastError}
+                  onNewFolderTab={newFolderTab}
                 />
               ) : (
                 tabs.map((tab) => (
@@ -413,11 +431,6 @@ function App() {
                 ))
               )}
             </div>
-            {lastError ? (
-              <div className="border-t border-cc-border bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                {lastError}
-              </div>
-            ) : null}
             <Settings
               tabsCollapsed={tabsCollapsed}
               onToggleTabs={toggleTabs}
@@ -460,6 +473,42 @@ function SessionBar({
   onClose: () => void;
 }) {
   const canStart = tab.status === "stopped" || tab.status === "error";
+  const isActive = (tab.status === "busy" || tab.status === "awaiting-input") && tab.started;
+  const [confirmingInterrupt, setConfirmingInterrupt] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  const interruptTimerRef = useRef<number | undefined>();
+  const closeTimerRef = useRef<number | undefined>();
+
+  useEffect(() => () => {
+    window.clearTimeout(interruptTimerRef.current);
+    window.clearTimeout(closeTimerRef.current);
+  }, []);
+
+  const requestInterrupt = () => {
+    setConfirmingInterrupt(true);
+    interruptTimerRef.current = window.setTimeout(() => setConfirmingInterrupt(false), 3500);
+  };
+
+  const confirmInterrupt = () => {
+    window.clearTimeout(interruptTimerRef.current);
+    setConfirmingInterrupt(false);
+    onInterrupt();
+  };
+
+  const requestClose = () => {
+    if (isActive) {
+      setConfirmingClose(true);
+      closeTimerRef.current = window.setTimeout(() => setConfirmingClose(false), 3500);
+    } else {
+      onClose();
+    }
+  };
+
+  const confirmClose = () => {
+    window.clearTimeout(closeTimerRef.current);
+    setConfirmingClose(false);
+    onClose();
+  };
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-cc-border bg-cc-surface/80 px-3">
@@ -479,22 +528,58 @@ function SessionBar({
           <Play size={13} />
           Start
         </button>
+      ) : confirmingInterrupt ? (
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-cc-muted">Interrupt?</span>
+          <button
+            className="flex h-7 items-center gap-1 rounded-md bg-red-500/15 px-2 text-xs text-red-300 hover:bg-red-500/25"
+            onClick={confirmInterrupt}
+          >
+            <Check size={12} />
+            Confirm
+          </button>
+          <button
+            className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:text-cc-foreground"
+            onClick={() => { window.clearTimeout(interruptTimerRef.current); setConfirmingInterrupt(false); }}
+          >
+            <X size={12} />
+          </button>
+        </div>
       ) : (
         <button
           className="flex h-7 items-center gap-1 rounded-md border border-cc-border px-2 text-xs text-cc-muted hover:text-cc-foreground"
-          onClick={onInterrupt}
+          onClick={requestInterrupt}
         >
           <Power size={13} />
           Interrupt
         </button>
       )}
-      <button
-        className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-        onClick={onClose}
-        title="Close session"
-      >
-        <X size={14} />
-      </button>
+      {confirmingClose ? (
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-cc-muted">Close session?</span>
+          <button
+            className="flex h-7 items-center gap-1 rounded-md bg-red-500/15 px-2 text-xs text-red-300 hover:bg-red-500/25"
+            onClick={confirmClose}
+          >
+            <Check size={12} />
+            Close
+          </button>
+          <button
+            className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:text-cc-foreground"
+            onClick={() => { window.clearTimeout(closeTimerRef.current); setConfirmingClose(false); }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      ) : (
+        <button
+          className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+          onClick={requestClose}
+          title="Close session"
+        >
+          <X size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -577,11 +662,11 @@ function PanelWindow({
 function EmptyState({
   runtimeReady,
   onNewTab,
-  error,
+  onNewFolderTab,
 }: {
   runtimeReady: boolean;
   onNewTab: () => void;
-  error: string | null;
+  onNewFolderTab: () => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background p-4">
@@ -589,39 +674,54 @@ function EmptyState({
         <div className="flex h-8 shrink-0 items-center justify-between border-b border-cc-border px-3 text-[11px] text-cc-muted">
           <div className="flex items-center gap-2">
             <SquareTerminal size={14} />
-            <span>No Claude session</span>
+            <span>No session</span>
           </div>
           <span>ready</span>
         </div>
-        <div className="flex flex-1 flex-col justify-center px-6 py-8">
-          <div className="max-w-lg">
-            <div className="text-xs leading-6 text-cc-muted">
-              <div>
-                <span className="text-cc-accent">sogo</span>
-                <span className="text-cc-muted">$</span>
-                <span> new-session</span>
-              </div>
-              <div>
-                <span className="text-cc-muted">starts Claude Code in a lightweight scratch terminal</span>
-              </div>
-            </div>
+
+        <div className="flex flex-1 flex-col px-6 py-8">
+          <div className="text-xs text-cc-muted">
+            <span className="text-cc-accent">sogo</span>
+            <span>$ </span>
+            <span>new-session</span>
+          </div>
+          <p className="mt-2 max-w-sm text-xs leading-5 text-cc-muted/70">
+            Claude Code in a desktop shell. Start a scratch session or open a project folder.
+          </p>
+
+          <div className="mt-6 flex items-center gap-2">
             <button
-              className="mt-5 flex h-9 items-center gap-2 rounded-md bg-cc-accent px-3 text-sm font-medium text-cc-background hover:opacity-90"
+              className="flex h-9 items-center gap-2 rounded-md bg-cc-accent px-3 text-sm font-medium text-cc-background hover:opacity-90"
               onClick={onNewTab}
             >
-              <Play size={15} />
+              <Play size={14} />
               New session
             </button>
+            {runtimeReady ? (
+              <button
+                className="flex h-9 items-center gap-2 rounded-md border border-cc-border px-3 text-sm text-cc-muted hover:border-cc-border/70 hover:text-cc-foreground"
+                onClick={onNewFolderTab}
+              >
+                <FolderOpen size={14} />
+                Open folder
+              </button>
+            ) : null}
+          </div>
+
+          <div className="mt-auto pt-10 flex items-center gap-3 text-[10px] text-cc-muted/40 font-mono">
+            <span><span className="text-cc-muted/60">⌘N</span> session</span>
+            <span className="text-cc-muted/20">·</span>
+            <span><span className="text-cc-muted/60">⌘W</span> close</span>
+            <span className="text-cc-muted/20">·</span>
+            <span><span className="text-cc-muted/60">⌥Space</span> hide/show</span>
+            <span className="text-cc-muted/20">·</span>
+            <span><span className="text-cc-muted/60">⌘1–9</span> switch tabs</span>
           </div>
         </div>
+
         {!runtimeReady ? (
           <div className="mx-4 mb-4 rounded-md border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
             Claude sessions run in the Tauri app. Browser preview shows layout only.
-          </div>
-        ) : null}
-        {error ? (
-          <div className="mx-4 mb-4 rounded-md border border-red-400/20 bg-red-400/10 p-3 text-xs leading-5 text-red-100">
-            {error}
           </div>
         ) : null}
       </div>
@@ -630,6 +730,28 @@ function EmptyState({
 }
 
 export default App;
+
+function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  const timerRef = useRef<number | undefined>();
+
+  useEffect(() => {
+    timerRef.current = window.setTimeout(onDismiss, 6000);
+    return () => window.clearTimeout(timerRef.current);
+  }, [message, onDismiss]);
+
+  return (
+    <div className="absolute inset-x-3 top-3 z-40 flex items-center gap-2.5 rounded-lg border border-cc-border bg-cc-surface px-3 py-2.5 text-xs shadow-lg">
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+      <span className="min-w-0 flex-1 text-cc-foreground">{message}</span>
+      <button
+        className="shrink-0 text-cc-muted hover:text-cc-foreground"
+        onClick={onDismiss}
+      >
+        <X size={11} />
+      </button>
+    </div>
+  );
+}
 
 function useDragHandler(tauriRuntime: boolean) {
   return useCallback(

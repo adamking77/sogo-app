@@ -69,3 +69,13 @@ select {
   border-left: 1px solid rgba(133, 146, 173, 0.13);
   padding-left: 12px;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

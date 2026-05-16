@@ -42,7 +42,7 @@ export function SkillsPanel({ onActivateSkill }: SkillsPanelProps) {
     <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-cc-border px-3">
         <div>
-          <h2 className="text-sm font-semibold">Claude inventory</h2>
+          <h2 className="text-sm font-semibold">Skills</h2>
           <div className="text-[11px] text-cc-muted">Installed skills and MCP servers</div>
         </div>
         <button

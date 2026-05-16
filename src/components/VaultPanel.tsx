@@ -89,14 +89,14 @@ export function VaultPanel() {
     <section className="flex min-h-0 flex-1 shrink flex-col bg-cc-surface">
       <div className="flex h-11 items-center justify-between border-b border-cc-border px-3">
         <div>
-          <h2 className="text-sm font-semibold">Vault documents</h2>
-          <div className="text-[11px] text-cc-muted">Read-only Supabase observer</div>
+          <h2 className="text-sm font-semibold">Vault</h2>
+          <div className="text-[11px] text-cc-muted">Knowledge browser</div>
         </div>
         <span className="rounded border border-cc-border px-2 py-1 text-xs text-cc-muted">{visibleDocuments.length}</span>
       </div>
       <div className="border-b border-cc-border p-2">
         <input
-          className="h-8 w-full rounded-md border border-cc-border bg-cc-background px-2 text-xs text-cc-foreground outline-none placeholder:text-cc-muted"
+          className="h-8 w-full rounded-md border border-cc-border bg-cc-background px-2 text-xs text-cc-foreground outline-none placeholder:text-cc-muted transition-colors duration-150 focus:border-cc-accent/40 focus:ring-1 focus:ring-cc-accent/30"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Filter vault"
@@ -260,7 +260,7 @@ function TreeNodeView({
   return (
     <div>
       <button
-        className="flex w-full items-center gap-1 rounded px-2 py-1.5 text-left text-xs hover:bg-cc-surface-strong"
+        className="flex w-full items-center gap-1 rounded px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong"
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={() => {
           if (isFolder) onToggle(node.key);
