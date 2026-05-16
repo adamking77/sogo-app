@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import logoSvg from "@/assets/logo.svg";
 import {
   Database,
   EyeOff,
@@ -303,9 +304,7 @@ function App() {
           onMouseDown={dragHandler}
         >
           <div className="flex h-full w-20 shrink-0 items-center px-3">
-            <div className="rounded-full border border-cc-border bg-cc-surface-strong/70 px-2 py-1 font-mono text-[11px] text-cc-muted">
-              sogo
-            </div>
+            <img src={logoSvg} alt="Sogo" className="h-6 w-6 rounded-md" />
           </div>
 
           <div className="min-w-0 flex-1">
