@@ -40,7 +40,7 @@ export function SkillsPanel({ onActivateSkill }: SkillsPanelProps) {
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-cc-border/40 px-3">
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
         <h2 className="text-sm font-semibold">Skills</h2>
         <button
           className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"

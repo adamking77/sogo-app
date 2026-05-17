@@ -2,15 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import logoSvg from "@/assets/logo.svg";
 import {
   Check,
-  Database,
   FileText,
   FolderOpen,
-  FolderTree,
+  PanelRight,
   Play,
   Pin,
   PinOff,
   SquareTerminal,
-  Wrench,
   X,
 } from "lucide-react";
 
@@ -29,10 +27,11 @@ import type { SogoTab } from "@/types";
 
 type ResizeEdge = "North" | "NorthEast" | "East" | "SouthEast" | "South" | "SouthWest" | "West" | "NorthWest";
 
-const TERMINAL_MIN_WIDTH = 420;
+const TERMINAL_MIN_WIDTH_SOLO = 420;
+const TERMINAL_MIN_WIDTH_WITH_EDITOR = 300;
 const FILE_EDITOR_MIN_WIDTH = 520;
-const FILE_EDITOR_MAX_WIDTH = 960;
-const FILE_EDITOR_DEFAULT_WIDTH = 720;
+const FILE_EDITOR_MAX_WIDTH = 1080;
+const FILE_EDITOR_DEFAULT_WIDTH = 760;
 const PANE_GAP = 8;
 
 const FONT_SIZE = {
@@ -49,7 +48,7 @@ function readStoredNumber(key: string, fallback: number) {
 function clampFileEditorWidth(width: number, toolPanelOpen: boolean) {
   const toolPanelWidth = toolPanelOpen ? 336 : 0;
   const gapCount = toolPanelOpen ? 2 : 1;
-  const maxAvailable = window.innerWidth - TERMINAL_MIN_WIDTH - toolPanelWidth - PANE_GAP * gapCount;
+  const maxAvailable = window.innerWidth - TERMINAL_MIN_WIDTH_WITH_EDITOR - toolPanelWidth - PANE_GAP * gapCount;
   const effectiveMin = Math.min(FILE_EDITOR_MIN_WIDTH, Math.max(220, maxAvailable));
   const effectiveMax = Math.max(effectiveMin, Math.min(FILE_EDITOR_MAX_WIDTH, maxAvailable));
   return Math.round(Math.min(Math.max(width, effectiveMin), effectiveMax));
@@ -97,6 +96,7 @@ function App() {
   const idleTimersRef = useRef<Record<string, number>>({});
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
   const [activePanel, setActivePanel] = useState<"vault" | "claude" | "files" | null>(null);
+  const [lastOpenedPanel, setLastOpenedPanel] = useState<"vault" | "claude" | "files">("files");
   const [lastError, setLastError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(() => localStorage.getItem("sogo.windowPinned") === "true");
   const [fileEditorWidth, setFileEditorWidth] = useState(() => readStoredNumber("sogo.fileEditorWidth", FILE_EDITOR_DEFAULT_WIDTH));
@@ -242,28 +242,64 @@ function App() {
     [removeTab, setActiveTabId, tauriRuntime],
   );
 
+  const prevPanelOpenRef = useRef<boolean>(!!activePanel);
+  const hasGrownForEditorRef = useRef<boolean>(false);
+
+  const growWindowFor = useCallback(async (deltaW: number) => {
+    if (!tauriRuntime || deltaW <= 0) return;
+    try {
+      const { LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+      const [size, scaleFactor, monitor] = await Promise.all([
+        appWindow.innerSize(),
+        appWindow.scaleFactor(),
+        currentMonitor(),
+      ]);
+      const currentW = size.width / scaleFactor;
+      const workAreaW = monitor?.workArea?.size?.width
+        ? monitor.workArea.size.width / scaleFactor
+        : window.screen.availWidth;
+      const maxW = workAreaW - 24;
+      const nextW = Math.min(currentW + deltaW, maxW);
+      if (nextW - currentW < 8) return;
+      await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
+    } catch {
+      // ignore
+    }
+  }, [tauriRuntime]);
+
   const openActiveFile = useCallback(
-    (path: string) => {
+    async (path: string) => {
       if (!activeTab) {
         setLastError("Start a Claude session before opening a file.");
         return;
       }
 
-      void openFile(activeTab.id, path);
+      const shouldGrow = !hasGrownForEditorRef.current;
+      await openFile(activeTab.id, path);
+      if (shouldGrow) {
+        hasGrownForEditorRef.current = true;
+        await growWindowFor(FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP);
+      }
     },
-    [activeTab, openFile],
+    [activeTab, openFile, growWindowFor],
   );
 
   const openVaultDocument = useCallback(
-    (sourcePath: string) => {
+    async (sourcePath: string) => {
       if (!activeTab) {
         setLastError("Start a session before opening a vault document.");
         return;
       }
 
-      void openFile(activeTab.id, sourcePath, { source: "vault" });
+      const shouldGrow = !hasGrownForEditorRef.current;
+      await openFile(activeTab.id, sourcePath, { source: "vault" });
+      if (shouldGrow) {
+        hasGrownForEditorRef.current = true;
+        await growWindowFor(FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP);
+      }
     },
-    [activeTab, openFile],
+    [activeTab, openFile, growWindowFor],
   );
 
   const activateSkill = useCallback(
@@ -361,9 +397,46 @@ function App() {
     [updateTab],
   );
 
-  const togglePanel = useCallback((panel: "vault" | "claude" | "files") => {
+
+  useEffect(() => {
+    if (activePanel) setLastOpenedPanel(activePanel);
+  }, [activePanel]);
+
+  const togglePanel = useCallback(async (panel: "vault" | "claude" | "files") => {
+    const wasOpen = !!activePanel;
+    const willOpen = activePanel !== panel;
+    const isFreshOpen = !wasOpen && willOpen;
+
+    if (isFreshOpen && tauriRuntime) {
+      try {
+        const { LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
+        const appWindow = getCurrentWindow();
+        const [size, scaleFactor, monitor] = await Promise.all([
+          appWindow.innerSize(),
+          appWindow.scaleFactor(),
+          currentMonitor(),
+        ]);
+        const currentW = size.width / scaleFactor;
+        const workAreaW = monitor?.workArea?.size?.width
+          ? monitor.workArea.size.width / scaleFactor
+          : window.screen.availWidth;
+        const desiredW = currentW + 336 + PANE_GAP;
+        const nextW = Math.min(desiredW, workAreaW - 24);
+        if (nextW > currentW + 8) {
+          await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
+          prevPanelOpenRef.current = true;
+        }
+      } catch {
+        // ignore — fall through to setState; the existing useEffect will catch up
+      }
+    }
+
     setActivePanel((current) => (current === panel ? null : panel));
-  }, []);
+  }, [activePanel, tauriRuntime]);
+
+  const toggleSidebar = useCallback(() => {
+    void togglePanel(activePanel ?? lastOpenedPanel);
+  }, [activePanel, lastOpenedPanel, togglePanel]);
 
   const toggleFileWindow = useCallback(() => {
     if (activeTab && activeEditor?.activePath) {
@@ -380,22 +453,15 @@ function App() {
     }, { invert: true });
   }, [activePanel, renderedFileEditorWidth]);
 
-  const prevPanelOpenRef = useRef<boolean>(!!activePanel);
-  const prevEditorOpenRef = useRef<boolean>(editorVisible);
-
   useEffect(() => {
     if (!tauriRuntime) return;
 
     const prevPanel = prevPanelOpenRef.current;
-    const prevEditor = prevEditorOpenRef.current;
     const panelOpened = !prevPanel && !!activePanel;
-    const editorOpened = !prevEditor && editorVisible;
     const panelClosed = prevPanel && !activePanel;
-    const editorClosed = prevEditor && !editorVisible;
     prevPanelOpenRef.current = !!activePanel;
-    prevEditorOpenRef.current = editorVisible;
 
-    if (!panelOpened && !editorOpened && !panelClosed && !editorClosed) return;
+    if (!panelOpened && !panelClosed) return;
 
     void import("@tauri-apps/api/window")
       .then(async ({ LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow }) => {
@@ -416,14 +482,7 @@ function App() {
           ? monitor.workArea.position.x / scaleFactor
           : 0;
 
-        let deltaW = 0;
-        if (panelOpened) deltaW += 336 + PANE_GAP;
-        if (panelClosed) deltaW -= 336 + PANE_GAP;
-        if (editorOpened) deltaW += FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP;
-        if (editorClosed) deltaW -= renderedFileEditorWidth + PANE_GAP;
-
-        if (deltaW === 0) return;
-
+        const deltaW = panelOpened ? 336 + PANE_GAP : -(336 + PANE_GAP);
         const minW = 680;
         const maxW = workAreaW - 24;
         const nextW = Math.min(Math.max(currentW + deltaW, minW), maxW);
@@ -440,7 +499,7 @@ function App() {
         }
       })
       .catch(() => undefined);
-  }, [activePanel, editorVisible, renderedFileEditorWidth, tauriRuntime]);
+  }, [activePanel, tauriRuntime]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -479,7 +538,12 @@ function App() {
   }, [newTab, closeTab, activeTab, activeEditor, tabs, setActiveTabId, saveEditor, closeEditor]);
 
   const dragHandler = useDragHandler(tauriRuntime);
-  const mainShellMinWidth = editorVisible ? TERMINAL_MIN_WIDTH : activePanel ? TERMINAL_MIN_WIDTH : 680;
+  const terminalMinWidth = editorVisible ? TERMINAL_MIN_WIDTH_WITH_EDITOR : TERMINAL_MIN_WIDTH_SOLO;
+  const mainShellMinWidth = editorVisible
+    ? TERMINAL_MIN_WIDTH_WITH_EDITOR
+    : activePanel
+      ? TERMINAL_MIN_WIDTH_SOLO
+      : 680;
 
   return (
     <div className="flex h-full w-full gap-2 bg-transparent text-cc-foreground">
@@ -521,33 +585,19 @@ function App() {
 
           <div className="flex shrink-0 items-center gap-0.5 pl-2 pr-2">
             <ChromeButton
-              active={activePanel === "vault"}
-              onClick={() => togglePanel("vault")}
-              title="Vault"
-            >
-              <Database size={13} />
-            </ChromeButton>
-            <ChromeButton
-              active={activePanel === "claude"}
-              onClick={() => togglePanel("claude")}
-              title="Skills"
-            >
-              <Wrench size={13} />
-            </ChromeButton>
-            <ChromeButton
-              active={activePanel === "files"}
-              onClick={() => togglePanel("files")}
-              title="Files"
-            >
-              <FolderTree size={13} />
-            </ChromeButton>
-            <ChromeButton
               active={editorVisible}
               dim={!editorVisible && !activeEditor?.activePath}
               onClick={toggleFileWindow}
               title={activeEditor?.activePath ? (editorVisible ? "Hide file" : "Show file") : "Open file"}
             >
               <FileText size={13} />
+            </ChromeButton>
+            <ChromeButton
+              active={!!activePanel}
+              onClick={toggleSidebar}
+              title={activePanel ? "Hide sidebar" : "Show sidebar"}
+            >
+              <PanelRight size={13} />
             </ChromeButton>
 
             <span className="w-2" aria-hidden />
@@ -565,7 +615,7 @@ function App() {
         <main className="flex min-h-0 flex-1 overflow-hidden">
           <section
             className="flex min-w-0 flex-1 flex-col"
-            style={{ minWidth: editorVisible ? TERMINAL_MIN_WIDTH : 0 }}
+            style={{ minWidth: editorVisible ? terminalMinWidth : 0 }}
           >
             {activeTab ? (
               <SessionBar
@@ -609,22 +659,20 @@ function App() {
             />
           </section>
           {activeTab && editorVisible ? (
-            <>
-              <PaneDivider
-                onMouseDown={beginFileEditorResize}
-                onDoubleClick={() => setFileEditorWidth(FILE_EDITOR_DEFAULT_WIDTH)}
+            <div
+              className="relative z-10 min-h-0 shrink-0 pr-2"
+              style={{ width: renderedFileEditorWidth, marginLeft: -10 }}
+              data-tauri-drag-region
+              onMouseDown={dragHandler}
+            >
+              <FileEditorPane
+                sessionId={activeTab.id}
+                cwd={activeTab.cwd}
+                onDragMouseDown={dragHandler}
+                onBeginResize={beginFileEditorResize}
+                onResetWidth={() => setFileEditorWidth(FILE_EDITOR_DEFAULT_WIDTH)}
               />
-              <div
-                className="min-h-0 shrink-0 py-2 pr-2"
-                style={{ width: renderedFileEditorWidth }}
-              >
-                <FileEditorPane
-                  sessionId={activeTab.id}
-                  cwd={activeTab.cwd}
-                  onDragMouseDown={dragHandler}
-                />
-              </div>
-            </>
+            </div>
           ) : null}
         </main>
         <ResizeHandle tauriRuntime={tauriRuntime} edge="North" />
@@ -875,10 +923,10 @@ function PanelWindow({
   const dragHandler = useDragHandler(tauriRuntime);
 
   const tabClass = (panel: "vault" | "claude" | "files") =>
-    `flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-xs transition-colors duration-150 ${
+    `flex h-7 flex-1 items-center justify-center rounded-full border px-2.5 text-xs transition-colors duration-150 ${
       activePanel === panel
-        ? "bg-cc-surface-strong text-cc-foreground"
-        : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
+        ? "border-cc-border bg-cc-surface-strong text-cc-foreground"
+        : "border-transparent text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
     }`;
 
   return (
@@ -889,20 +937,17 @@ function PanelWindow({
         onMouseDown={dragHandler}
       />
       <div
-        className="flex h-10 shrink-0 items-center gap-1 border-b border-cc-border/40 px-2"
+        className="flex h-10 shrink-0 items-center gap-1 px-2"
         data-tauri-drag-region
         onMouseDown={dragHandler}
       >
         <button className={tabClass("files")} onClick={() => onPanelChange("files")}>
-          <FolderTree size={13} />
           Files
         </button>
         <button className={tabClass("vault")} onClick={() => onPanelChange("vault")}>
-          <Database size={13} />
           Vault
         </button>
         <button className={tabClass("claude")} onClick={() => onPanelChange("claude")}>
-          <Wrench size={13} />
           Skills
         </button>
         <button
@@ -933,24 +978,6 @@ function PanelWindow({
   );
 }
 
-function PaneDivider({
-  onMouseDown,
-  onDoubleClick,
-}: {
-  onMouseDown: (event: ReactMouseEvent) => void;
-  onDoubleClick: () => void;
-}) {
-  return (
-    <button
-      className="group relative h-full w-2 shrink-0 cursor-col-resize text-transparent"
-      onMouseDown={onMouseDown}
-      onDoubleClick={onDoubleClick}
-      title="Resize file editor"
-    >
-      <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors duration-200 group-hover:bg-cc-accent/50" />
-    </button>
-  );
-}
 
 function EmptyState({
   runtimeReady,
@@ -1156,10 +1183,10 @@ function ResizeHandle({ tauriRuntime, edge }: { tauriRuntime: boolean; edge: Res
   }
 
   // Edges
-  if (edge === "North") return <div className={`absolute inset-x-4 top-0 z-20 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "South") return <div className={`absolute inset-x-0 bottom-0 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "East")  return <div className={`absolute inset-y-0 right-0 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "West")  return <div className={`absolute inset-y-0 left-0 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
+  if (edge === "North") return <div className={`absolute inset-x-4 top-0 z-30 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
+  if (edge === "South") return <div className={`absolute inset-x-4 bottom-0 z-30 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
+  if (edge === "East")  return <div className={`absolute inset-y-4 right-0 z-30 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
+  if (edge === "West")  return <div className={`absolute inset-y-4 left-0 z-30 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
 
   return null;
 }

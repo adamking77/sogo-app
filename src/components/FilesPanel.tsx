@@ -78,7 +78,7 @@ export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFil
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
-      <div className="flex h-10 shrink-0 items-center border-b border-cc-border/40 px-3">
+      <div className="flex h-10 shrink-0 items-center px-3">
         <h2 className="truncate text-sm font-semibold" title={cwd}>{rootName}</h2>
       </div>
       {error ? (

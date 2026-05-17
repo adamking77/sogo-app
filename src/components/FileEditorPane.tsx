@@ -36,9 +36,11 @@ interface FileEditorPaneProps {
   sessionId: string;
   cwd: string;
   onDragMouseDown: (event: ReactMouseEvent) => void;
+  onBeginResize: (event: ReactMouseEvent) => void;
+  onResetWidth: () => void;
 }
 
-export function FileEditorPane({ sessionId, cwd, onDragMouseDown }: FileEditorPaneProps) {
+export function FileEditorPane({ sessionId, cwd, onDragMouseDown, onBeginResize, onResetWidth }: FileEditorPaneProps) {
   const session = useEditorStore((state) => state.sessions[sessionId]);
   const {
     save,
@@ -66,7 +68,7 @@ export function FileEditorPane({ sessionId, cwd, onDragMouseDown }: FileEditorPa
 
   return (
     <aside
-      className="file-editor-pane relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background"
+      className="file-editor-pane relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border bg-cc-background shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]"
       onFocusCapture={() => setFocusWithin(sessionId, true)}
       onBlurCapture={(event) => {
         if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
@@ -75,7 +77,17 @@ export function FileEditorPane({ sessionId, cwd, onDragMouseDown }: FileEditorPa
       }}
     >
       <div
-        className="h-2 w-full shrink-0 cursor-grab"
+        className="group/resize absolute inset-y-0 left-0 z-30 w-3 cursor-col-resize"
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          onBeginResize(event);
+        }}
+        onDoubleClick={onResetWidth}
+        title="Resize editor"
+        aria-label="Resize editor"
+      />
+      <div
+        className="h-3 w-full shrink-0 cursor-grab"
         data-tauri-drag-region
         onMouseDown={onDragMouseDown}
       />
@@ -275,15 +287,15 @@ function MarkdownPreview({ contents }: { contents: string }) {
 
 const markdownComponents: Components = {
   h1: ({ children }) => (
-    <h1 className="mb-6 mt-0 text-[28px] font-semibold leading-[1.15] tracking-[-0.02em] text-cc-foreground">
+    <h1 className="mb-6 mt-0 text-[28px] font-normal leading-[1.15] tracking-[-0.02em] text-cc-foreground">
       {children}
     </h1>
   ),
   h2: ({ children }) => (
-    <h2 className="mb-3 mt-10 text-[17px] font-semibold leading-snug tracking-tight text-cc-foreground">{children}</h2>
+    <h2 className="mb-3 mt-10 text-[17px] font-normal leading-snug tracking-tight text-cc-foreground">{children}</h2>
   ),
   h3: ({ children }) => (
-    <h3 className="mb-2 mt-7 text-[14px] font-semibold leading-snug tracking-tight text-cc-foreground">{children}</h3>
+    <h3 className="mb-2 mt-7 text-[14px] font-normal leading-snug tracking-tight text-cc-foreground">{children}</h3>
   ),
   p: ({ children }) => (
     <p className="my-4 text-[14px] leading-[1.75] text-cc-muted">{children}</p>
@@ -342,7 +354,7 @@ const markdownComponents: Components = {
     <tbody className="divide-y divide-cc-border/30">{children}</tbody>
   ),
   th: ({ children }) => (
-    <th className="px-3 py-2 text-left text-[12px] font-medium uppercase tracking-wide text-cc-muted/80">
+    <th className="px-3 py-2 text-left text-[12px] font-normal uppercase tracking-wide text-cc-muted/80">
       {children}
     </th>
   ),
@@ -462,6 +474,10 @@ function buildEditorTheme(fontPx: number) {
     ".cm-content": {
       padding: "20px 0",
       caretColor: "rgb(var(--cc-foreground-rgb))",
+      fontWeight: "normal",
+    },
+    ".cm-content *": {
+      fontWeight: "normal !important",
     },
     ".cm-line": {
       padding: "0 20px",

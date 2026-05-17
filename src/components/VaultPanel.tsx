@@ -91,11 +91,11 @@ export function VaultPanel({ onOpenDocument, activePath }: VaultPanelProps) {
 
   return (
     <section className="flex min-h-0 flex-1 shrink flex-col bg-cc-surface">
-      <div className="flex h-10 items-center justify-between border-b border-cc-border/40 px-3">
+      <div className="flex h-10 items-center justify-between px-3">
         <h2 className="text-sm font-semibold">Vault</h2>
         <span className="text-[11px] tabular-nums text-cc-muted">{visibleDocuments.length}</span>
       </div>
-      <div className="border-b border-cc-border/40 p-2">
+      <div className="p-2">
         <input
           className="h-8 w-full rounded-md border border-cc-border bg-cc-background px-2 text-xs text-cc-foreground outline-none placeholder:text-cc-muted transition-colors duration-150 focus:border-cc-accent/40 focus:ring-1 focus:ring-cc-accent/30"
           value={filter}
