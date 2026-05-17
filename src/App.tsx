@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import logoSvg from "@/assets/logo.svg";
 import {
   Check,
-  FileText,
   FolderOpen,
   PanelRight,
   Play,
   Pin,
   PinOff,
-  SquareTerminal,
   X,
 } from "lucide-react";
 
@@ -105,7 +103,6 @@ function App() {
   const openFile = useEditorStore((state) => state.openFile);
   const saveEditor = useEditorStore((state) => state.save);
   const closeEditor = useEditorStore((state) => state.close);
-  const toggleEditorWindow = useEditorStore((state) => state.toggleWindow);
   const palette = palettes[paletteName];
   const tauriRuntime = isTauriRuntime();
 
@@ -438,15 +435,6 @@ function App() {
     void togglePanel(activePanel ?? lastOpenedPanel);
   }, [activePanel, lastOpenedPanel, togglePanel]);
 
-  const toggleFileWindow = useCallback(() => {
-    if (activeTab && activeEditor?.activePath) {
-      toggleEditorWindow(activeTab.id);
-      return;
-    }
-
-    togglePanel("files");
-  }, [activeEditor?.activePath, activeTab, toggleEditorWindow, togglePanel]);
-
   const beginFileEditorResize = useCallback((event: ReactMouseEvent) => {
     beginHorizontalPaneResize(event, renderedFileEditorWidth, (nextWidth) => {
       setFileEditorWidth(clampFileEditorWidth(nextWidth, !!activePanel));
@@ -584,14 +572,6 @@ function App() {
           </div>
 
           <div className="flex shrink-0 items-center gap-0.5 pl-2 pr-2">
-            <ChromeButton
-              active={editorVisible}
-              dim={!editorVisible && !activeEditor?.activePath}
-              onClick={toggleFileWindow}
-              title={activeEditor?.activePath ? (editorVisible ? "Hide file" : "Show file") : "Open file"}
-            >
-              <FileText size={13} />
-            </ChromeButton>
             <ChromeButton
               active={!!activePanel}
               onClick={toggleSidebar}
@@ -989,58 +969,52 @@ function EmptyState({
   onNewFolderTab: () => void;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background p-4">
-      <div className="flex min-h-0 flex-1 flex-col rounded-md border border-cc-border bg-cc-surface/55 font-mono">
-        <div className="flex h-8 shrink-0 items-center justify-between border-b border-cc-border px-3 text-[11px] text-cc-muted">
-          <div className="flex items-center gap-2">
-            <SquareTerminal size={14} />
-            <span>No session</span>
-          </div>
-          <span>ready</span>
+    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background">
+      <div className="m-auto w-full max-w-md px-10 py-12">
+        <div className="font-mono text-[11px] text-cc-muted/70">
+          <span className="text-cc-accent">sogo</span>
+          <span>$ </span>
+          <span>new-session</span>
         </div>
 
-        <div className="flex flex-1 flex-col px-6 py-8">
-          <div className="text-xs text-cc-muted">
-            <span className="text-cc-accent">sogo</span>
-            <span>$ </span>
-            <span>new-session</span>
-          </div>
-          <p className="mt-2 max-w-sm text-xs leading-5 text-cc-muted/70">
-            Claude Code in a desktop shell. Start a scratch session or open a project folder.
-          </p>
+        <h1 className="mt-5 text-[22px] leading-[1.2] tracking-tight text-cc-foreground">
+          Ready when you are.
+        </h1>
+        <p className="mt-3 max-w-sm text-[13.5px] leading-[1.7] text-cc-muted">
+          Sogo wraps Claude Code as a native macOS app. Start a scratch session or open a project folder.
+        </p>
 
-          <div className="mt-6 flex items-center gap-2">
+        <div className="mt-7 flex flex-wrap items-center gap-2">
+          <button
+            className="flex h-8 items-center gap-1.5 rounded-full border border-cc-border bg-cc-surface-strong px-3.5 text-xs text-cc-foreground transition-colors hover:bg-cc-surface-strong/70"
+            onClick={onNewTab}
+          >
+            <Play size={12} />
+            New session
+          </button>
+          {runtimeReady ? (
             <button
-              className="flex h-9 items-center gap-2 rounded-md bg-cc-accent px-3 text-sm font-medium text-cc-background hover:opacity-90"
-              onClick={onNewTab}
+              className="flex h-8 items-center gap-1.5 rounded-full border border-transparent px-3.5 text-xs text-cc-muted transition-colors hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+              onClick={onNewFolderTab}
             >
-              <Play size={14} />
-              New session
+              <FolderOpen size={12} />
+              Open folder
             </button>
-            {runtimeReady ? (
-              <button
-                className="flex h-9 items-center gap-2 rounded-md border border-cc-border px-3 text-sm text-cc-muted hover:border-cc-border/70 hover:text-cc-foreground"
-                onClick={onNewFolderTab}
-              >
-                <FolderOpen size={14} />
-                Open folder
-              </button>
-            ) : null}
-          </div>
+          ) : null}
+        </div>
 
-          <div className="mt-auto pt-10 flex items-center gap-3 text-[10px] text-cc-muted/40 font-mono">
-            <span><span className="text-cc-muted/60">⌘N</span> session</span>
-            <span className="text-cc-muted/20">·</span>
-            <span><span className="text-cc-muted/60">⌘W</span> close</span>
-            <span className="text-cc-muted/20">·</span>
-            <span><span className="text-cc-muted/60">⌥Space</span> hide/show</span>
-            <span className="text-cc-muted/20">·</span>
-            <span><span className="text-cc-muted/60">⌘1–9</span> switch tabs</span>
-          </div>
+        <div className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[10.5px] text-cc-muted/50">
+          <span><span className="text-cc-muted/80">⌘N</span> session</span>
+          <span className="text-cc-muted/20">·</span>
+          <span><span className="text-cc-muted/80">⌘W</span> close</span>
+          <span className="text-cc-muted/20">·</span>
+          <span><span className="text-cc-muted/80">⌥Space</span> hide / show</span>
+          <span className="text-cc-muted/20">·</span>
+          <span><span className="text-cc-muted/80">⌘1–9</span> switch tabs</span>
         </div>
 
         {!runtimeReady ? (
-          <div className="mx-4 mb-4 rounded-md border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
+          <div className="mt-8 rounded-md border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
             Claude sessions run in the Tauri app. Browser preview shows layout only.
           </div>
         ) : null}

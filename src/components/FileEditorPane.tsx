@@ -9,7 +9,8 @@ import {
   rectangularSelection,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 import { markdown } from "@codemirror/lang-markdown";
 import { javascript } from "@codemirror/lang-javascript";
 import { css } from "@codemirror/lang-css";
@@ -427,6 +428,47 @@ function CodeMirrorEditor({
   return <div ref={containerRef} className="h-full min-h-0" />;
 }
 
+const sogoHighlightStyle = HighlightStyle.define([
+  // Markdown markers (#, *, -, 1., backticks, etc.) → accent
+  { tag: t.processingInstruction, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.contentSeparator, color: "rgba(var(--cc-accent-rgb) / 0.7)" },
+  { tag: t.heading, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.list, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.quote, color: "rgb(var(--cc-muted-rgb))", fontStyle: "italic" },
+  { tag: t.link, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.url, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.emphasis, fontStyle: "italic" },
+  { tag: t.strikethrough, textDecoration: "line-through" },
+  { tag: t.monospace, color: "rgb(var(--cc-foreground-rgb))" },
+  // Code (TS/JS/JSON/etc) — accent for syntactic anchors, foreground for content
+  { tag: t.keyword, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.controlKeyword, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.moduleKeyword, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.operatorKeyword, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.atom, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.bool, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.null, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.typeName, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.className, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.string, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.number, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.variableName, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.propertyName, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.function(t.variableName), color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.comment, color: "rgba(var(--cc-muted-rgb) / 0.7)", fontStyle: "italic" },
+  { tag: t.lineComment, color: "rgba(var(--cc-muted-rgb) / 0.7)", fontStyle: "italic" },
+  { tag: t.blockComment, color: "rgba(var(--cc-muted-rgb) / 0.7)", fontStyle: "italic" },
+  { tag: t.punctuation, color: "rgba(var(--cc-muted-rgb) / 0.8)" },
+  { tag: t.bracket, color: "rgba(var(--cc-muted-rgb) / 0.8)" },
+  { tag: t.operator, color: "rgba(var(--cc-muted-rgb) / 0.9)" },
+  { tag: t.meta, color: "rgba(var(--cc-muted-rgb) / 0.7)" },
+  { tag: t.attributeName, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.attributeValue, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.tagName, color: "rgb(var(--cc-accent-rgb))" },
+  { tag: t.regexp, color: "rgb(var(--cc-foreground-rgb))" },
+  { tag: t.escape, color: "rgb(var(--cc-accent-rgb))" },
+]);
+
 function editorExtensions(path: string, fontPx: number): Extension[] {
   const language = languageForPath(path);
   const isMarkdownFile = /\.(md|mdx|markdown)$/i.test(path);
@@ -441,7 +483,7 @@ function editorExtensions(path: string, fontPx: number): Extension[] {
     highlightActiveLine(),
     highlightSelectionMatches(),
     EditorView.lineWrapping,
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    syntaxHighlighting(sogoHighlightStyle, { fallback: true }),
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
     buildEditorTheme(fontPx),
     ...(language ? [language] : []),
