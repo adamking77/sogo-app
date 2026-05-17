@@ -1,48 +1,52 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, FileText, Folder } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
 import type { FileEntry } from "@/types";
 
 interface FilesPanelProps {
+  sessionId: string;
   cwd: string;
   folderChosen: boolean;
+  activePath?: string | null;
+  onOpenFile: (path: string) => void;
 }
 
 type LoadedMap = Record<string, FileEntry[]>;
 type LoadingSet = Set<string>;
 
-export function FilesPanel({ cwd, folderChosen }: FilesPanelProps) {
+export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFile }: FilesPanelProps) {
   const [loaded, setLoaded] = useState<LoadedMap>({});
   const [loading, setLoading] = useState<LoadingSet>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  const loadDir = useCallback(async (path: string) => {
+  const loadDir = useCallback(async (path?: string) => {
     if (!isTauriRuntime()) return;
-    setLoading((prev) => new Set([...prev, path]));
+    const key = path ?? cwd;
+    setLoading((prev) => new Set([...prev, key]));
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const entries = await invoke<FileEntry[]>("list_directory", { path });
-      setLoaded((prev) => ({ ...prev, [path]: entries }));
+      const entries = await invoke<FileEntry[]>("list_directory", { sessionId, path });
+      setLoaded((prev) => ({ ...prev, [key]: entries }));
       setError(null);
     } catch (err) {
-      setError(String(err));
+      setError(formatFileError(err));
     } finally {
       setLoading((prev) => {
         const next = new Set(prev);
-        next.delete(path);
+        next.delete(key);
         return next;
       });
     }
-  }, []);
+  }, [cwd, sessionId]);
 
   useEffect(() => {
     if (!folderChosen || !cwd) return;
     setLoaded({});
     setExpanded(new Set());
     setError(null);
-    void loadDir(cwd);
+    void loadDir();
   }, [cwd, folderChosen, loadDir]);
 
   const toggle = useCallback(
@@ -74,11 +78,8 @@ export function FilesPanel({ cwd, folderChosen }: FilesPanelProps) {
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
-      <div className="flex h-11 shrink-0 items-center border-b border-cc-border px-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">{rootName}</h2>
-          <div className="truncate text-[11px] text-cc-muted">{cwd}</div>
-        </div>
+      <div className="flex h-10 shrink-0 items-center border-b border-cc-border/40 px-3">
+        <h2 className="truncate text-sm font-semibold" title={cwd}>{rootName}</h2>
       </div>
       {error ? (
         <div className="m-3 rounded-md border border-red-400/20 bg-red-400/10 p-3 text-xs text-red-100">{error}</div>
@@ -94,12 +95,22 @@ export function FilesPanel({ cwd, folderChosen }: FilesPanelProps) {
             loaded={loaded}
             loading={loading}
             expanded={expanded}
+            activePath={activePath}
             onToggle={toggle}
+            onOpenFile={onOpenFile}
           />
         ) : null}
       </div>
     </section>
   );
+}
+
+function formatFileError(error: unknown) {
+  if (typeof error === "object" && error && "message" in error) {
+    return String((error as { message?: unknown }).message);
+  }
+
+  return String(error);
 }
 
 function TreeLevel({
@@ -109,7 +120,9 @@ function TreeLevel({
   loaded,
   loading,
   expanded,
+  activePath,
   onToggle,
+  onOpenFile,
 }: {
   entries: FileEntry[];
   parentPath: string;
@@ -117,7 +130,9 @@ function TreeLevel({
   loaded: LoadedMap;
   loading: LoadingSet;
   expanded: Set<string>;
+  activePath?: string | null;
   onToggle: (path: string) => void;
+  onOpenFile: (path: string) => void;
 }) {
   if (loading.has(parentPath) && entries.length === 0) {
     return (
@@ -137,7 +152,9 @@ function TreeLevel({
           loaded={loaded}
           loading={loading}
           expanded={expanded}
+          activePath={activePath}
           onToggle={onToggle}
+          onOpenFile={onOpenFile}
         />
       ))}
     </>
@@ -150,40 +167,42 @@ function TreeRow({
   loaded,
   loading,
   expanded,
+  activePath,
   onToggle,
+  onOpenFile,
 }: {
   entry: FileEntry;
   depth: number;
   loaded: LoadedMap;
   loading: LoadingSet;
   expanded: Set<string>;
+  activePath?: string | null;
   onToggle: (path: string) => void;
+  onOpenFile: (path: string) => void;
 }) {
   const isExpanded = expanded.has(entry.path);
   const children = loaded[entry.path];
+  const isActive = !entry.isDir && activePath === entry.path;
 
   return (
     <div>
       <button
-        className="flex w-full items-center gap-1 py-[3px] text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong"
-        style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={() => { if (entry.isDir) onToggle(entry.path); }}
+        className={`flex w-full items-center gap-1.5 py-[3px] text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
+          isActive ? "bg-cc-surface-strong" : ""
+        }`}
+        style={{ paddingLeft: 10 + depth * 14 }}
+        onClick={() => { if (entry.isDir) onToggle(entry.path); else onOpenFile(entry.path); }}
         title={entry.path}
       >
         {entry.isDir ? (
           <ChevronRight
             size={12}
-            className={`shrink-0 text-cc-muted transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`}
+            className={`shrink-0 text-cc-muted/70 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`}
           />
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        {entry.isDir ? (
-          <Folder size={13} className="shrink-0 text-cc-muted" />
-        ) : (
-          <FileText size={13} className="shrink-0 text-cc-muted/60" />
-        )}
-        <span className={`truncate pr-2 ${entry.isDir ? "text-cc-foreground" : "text-cc-muted"}`}>
+        <span className={`truncate pr-2 ${isActive ? "text-cc-foreground" : entry.isDir ? "text-cc-foreground/90" : "text-cc-muted"}`}>
           {entry.name}
         </span>
       </button>
@@ -195,7 +214,9 @@ function TreeRow({
           loaded={loaded}
           loading={loading}
           expanded={expanded}
+          activePath={activePath}
           onToggle={onToggle}
+          onOpenFile={onOpenFile}
         />
       ) : null}
     </div>

@@ -27,35 +27,29 @@ export function Settings({ tabsCollapsed, onToggleTabs, onNewFolderSession }: Se
   }, [open]);
 
   return (
-    <div className="relative flex h-8 items-center gap-2 border-t border-cc-border bg-cc-surface/70 px-2">
-      <div className="hidden items-center gap-2 text-[11px] text-cc-muted sm:flex">
-        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-        <span>xterm PTY</span>
-        <span className="text-cc-border">/</span>
-        <span>input owned by Claude Code</span>
-      </div>
+    <div className="relative flex h-8 items-center gap-0.5 px-2">
       <button
-        className="ml-auto flex h-6 w-6 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+        className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
         onClick={onNewFolderSession}
         title="Start folder-scoped session"
       >
-        <FolderPlus size={14} />
+        <FolderPlus size={13} />
       </button>
       <button
-        className={`flex h-6 w-6 items-center justify-center rounded-full hover:bg-cc-surface-strong ${
-          open ? "text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
+        className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors duration-150 hover:bg-cc-surface-strong ${
+          open ? "bg-cc-surface-strong/60 text-cc-accent" : "text-cc-muted hover:text-cc-foreground"
         }`}
         onClick={() => setOpen((current) => !current)}
         title="Display settings"
       >
-        <Settings2 size={14} />
+        <Settings2 size={13} />
       </button>
       <button
-        className="flex h-6 w-6 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+        className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
         onClick={onToggleTabs}
         title={tabsCollapsed ? "Show tabs" : "Hide tabs"}
       >
-        {tabsCollapsed ? <PanelTopOpen size={15} /> : <PanelTopClose size={15} />}
+        {tabsCollapsed ? <PanelTopOpen size={14} /> : <PanelTopClose size={14} />}
       </button>
       {open ? (
         <div

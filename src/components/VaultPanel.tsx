@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { ChevronRight, FileText, Folder } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 import { createRuntimeSupabaseClient } from "@/lib/supabase";
 import { isTauriRuntime } from "@/lib/runtime";
@@ -22,10 +22,14 @@ interface TreeNode {
   document?: VaultDocument;
 }
 
-export function VaultPanel() {
+interface VaultPanelProps {
+  onOpenDocument: (sourcePath: string) => void;
+  activePath?: string | null;
+}
+
+export function VaultPanel({ onOpenDocument, activePath }: VaultPanelProps) {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [documents, setDocuments] = useState<VaultDocument[]>([]);
-  const [selected, setSelected] = useState<VaultDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -87,14 +91,11 @@ export function VaultPanel() {
 
   return (
     <section className="flex min-h-0 flex-1 shrink flex-col bg-cc-surface">
-      <div className="flex h-11 items-center justify-between border-b border-cc-border px-3">
-        <div>
-          <h2 className="text-sm font-semibold">Vault</h2>
-          <div className="text-[11px] text-cc-muted">Knowledge browser</div>
-        </div>
-        <span className="rounded border border-cc-border px-2 py-1 text-xs text-cc-muted">{visibleDocuments.length}</span>
+      <div className="flex h-10 items-center justify-between border-b border-cc-border/40 px-3">
+        <h2 className="text-sm font-semibold">Vault</h2>
+        <span className="text-[11px] tabular-nums text-cc-muted">{visibleDocuments.length}</span>
       </div>
-      <div className="border-b border-cc-border p-2">
+      <div className="border-b border-cc-border/40 p-2">
         <input
           className="h-8 w-full rounded-md border border-cc-border bg-cc-background px-2 text-xs text-cc-foreground outline-none placeholder:text-cc-muted transition-colors duration-150 focus:border-cc-accent/40 focus:ring-1 focus:ring-cc-accent/30"
           value={filter}
@@ -113,6 +114,7 @@ export function VaultPanel() {
           <Tree
             nodes={tree}
             expanded={expanded}
+            activeSourcePath={activePath}
             onToggle={(key) =>
               setExpanded((current) => {
                 const next = new Set(current);
@@ -121,16 +123,12 @@ export function VaultPanel() {
                 return next;
               })
             }
-            onSelect={setSelected}
+            onSelect={(document) => {
+              if (document.source_path) onOpenDocument(document.source_path);
+            }}
           />
         )}
       </div>
-      {selected ? (
-        <div className="border-t border-cc-border p-3">
-          <div className="truncate text-sm font-medium">{selected.title ?? "Untitled"}</div>
-          <div className="mt-1 break-all text-xs text-cc-muted">{selected.source_path}</div>
-        </div>
-      ) : null}
     </section>
   );
 }
@@ -213,11 +211,13 @@ function collectFolderKeys(nodes: TreeNode[]): string[] {
 function Tree({
   nodes,
   expanded,
+  activeSourcePath,
   onToggle,
   onSelect,
 }: {
   nodes: TreeNode[];
   expanded: Set<string>;
+  activeSourcePath?: string | null;
   onToggle: (key: string) => void;
   onSelect: (document: VaultDocument) => void;
 }) {
@@ -233,6 +233,7 @@ function Tree({
           node={node}
           depth={0}
           expanded={expanded}
+          activeSourcePath={activeSourcePath}
           onToggle={onToggle}
           onSelect={onSelect}
         />
@@ -245,23 +246,29 @@ function TreeNodeView({
   node,
   depth,
   expanded,
+  activeSourcePath,
   onToggle,
   onSelect,
 }: {
   node: TreeNode;
   depth: number;
   expanded: Set<string>;
+  activeSourcePath?: string | null;
   onToggle: (key: string) => void;
   onSelect: (document: VaultDocument) => void;
 }) {
   const isFolder = node.children.length > 0;
   const isExpanded = expanded.has(node.key);
+  const isActive = !isFolder && !!node.document?.source_path && !!activeSourcePath
+    && (activeSourcePath === node.document.source_path || activeSourcePath.endsWith(`/${node.document.source_path}`));
 
   return (
     <div>
       <button
-        className="flex w-full items-center gap-1 rounded px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong"
-        style={{ paddingLeft: 8 + depth * 14 }}
+        className={`flex w-full items-center gap-1.5 rounded py-[3px] pr-2 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
+          isActive ? "bg-cc-surface-strong" : ""
+        }`}
+        style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => {
           if (isFolder) onToggle(node.key);
           else if (node.document) onSelect(node.document);
@@ -269,14 +276,17 @@ function TreeNodeView({
       >
         {isFolder ? (
           <ChevronRight
-            size={13}
-            className={`shrink-0 text-cc-muted transition-transform ${isExpanded ? "rotate-90" : ""}`}
+            size={12}
+            className={`shrink-0 text-cc-muted/70 transition-transform ${isExpanded ? "rotate-90" : ""}`}
           />
         ) : (
-          <FileText size={13} className="shrink-0 text-cc-muted" />
+          <span className="w-3 shrink-0" />
         )}
-        {isFolder ? <Folder size={13} className="shrink-0 text-cc-muted" /> : null}
-        <span className="truncate text-cc-foreground">{node.label}</span>
+        <span
+          className={`truncate ${isActive ? "text-cc-foreground" : isFolder ? "text-cc-foreground/90" : "text-cc-muted"}`}
+        >
+          {node.label}
+        </span>
       </button>
       {isFolder && isExpanded
         ? node.children.map((child) => (
@@ -285,6 +295,7 @@ function TreeNodeView({
               node={child}
               depth={depth + 1}
               expanded={expanded}
+              activeSourcePath={activeSourcePath}
               onToggle={onToggle}
               onSelect={onSelect}
             />

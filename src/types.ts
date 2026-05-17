@@ -36,3 +36,21 @@ export interface FileEntry {
   path: string;
   isDir: boolean;
 }
+
+export interface FileMeta {
+  path: string;
+  size: number;
+  mtimeMs?: number;
+  isText: boolean;
+}
+
+export interface FileContent {
+  path: string;
+  contents: string;
+  meta: FileMeta;
+}
+
+export interface FileCommandError {
+  kind: string;
+  message: string;
+}

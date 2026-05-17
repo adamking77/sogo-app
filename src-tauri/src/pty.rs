@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Default)]
 pub struct PtyRegistry {
     sessions: Mutex<HashMap<String, Arc<PtySession>>>,
+    roots: Mutex<HashMap<String, PathBuf>>,
 }
 
 struct PtySession {
@@ -74,6 +75,9 @@ pub fn spawn_session(
     if !cwd.is_dir() {
         return Err(format!("Working directory does not exist: {}", request.cwd));
     }
+    let canonical_cwd = cwd
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve working directory: {error}"))?;
 
     let existing = registry
         .sessions
@@ -96,7 +100,7 @@ pub fn spawn_session(
 
     let claude_path = resolve_claude_binary();
     let mut command = CommandBuilder::new(claude_path);
-    command.cwd(&cwd);
+    command.cwd(&canonical_cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
 
@@ -138,6 +142,11 @@ pub fn spawn_session(
         .lock()
         .map_err(|_| "PTY registry lock poisoned".to_string())?
         .insert(request.session_id.clone(), session);
+    registry
+        .roots
+        .lock()
+        .map_err(|_| "PTY roots lock poisoned".to_string())?
+        .insert(request.session_id.clone(), canonical_cwd.clone());
 
     let event_session_id = request.session_id.clone();
     thread::spawn(move || {
@@ -169,7 +178,7 @@ pub fn spawn_session(
 
     Ok(SessionInfo {
         session_id: request.session_id,
-        cwd: request.cwd,
+        cwd: canonical_cwd.to_string_lossy().to_string(),
     })
 }
 
@@ -239,6 +248,11 @@ pub fn close_session(registry: State<'_, PtyRegistry>, session_id: String) -> Re
     if let Some(session) = session {
         shutdown_session(session, true);
     }
+    registry
+        .roots
+        .lock()
+        .map_err(|_| "PTY roots lock poisoned".to_string())?
+        .remove(&session_id);
 
     Ok(())
 }
@@ -277,9 +291,25 @@ pub fn session_active(
             .lock()
             .map_err(|_| "PTY registry lock poisoned".to_string())?
             .remove(&session_id);
+        registry
+            .roots
+            .lock()
+            .map_err(|_| "PTY roots lock poisoned".to_string())?
+            .remove(&session_id);
     }
 
     Ok(!exited)
+}
+
+impl PtyRegistry {
+    pub fn workspace_root(&self, session_id: &str) -> Result<PathBuf, String> {
+        self.roots
+            .lock()
+            .map_err(|_| "PTY roots lock poisoned".to_string())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("No workspace root for tab {session_id}"))
+    }
 }
 
 #[tauri::command]
@@ -376,6 +406,9 @@ fn emit_exit_and_cleanup(app: &AppHandle, session_id: &str) {
         let registry = app.state::<PtyRegistry>();
         if let Ok(mut sessions) = registry.sessions.lock() {
             sessions.remove(session_id);
+        };
+        if let Ok(mut roots) = registry.roots.lock() {
+            roots.remove(session_id);
         };
     }
 }

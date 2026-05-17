@@ -1,0 +1,504 @@
+import { useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { EditorState, type Extension } from "@codemirror/state";
+import {
+  drawSelection,
+  EditorView,
+  highlightActiveLine,
+  keymap,
+  lineNumbers,
+  rectangularSelection,
+} from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { markdown } from "@codemirror/lang-markdown";
+import { javascript } from "@codemirror/lang-javascript";
+import { css } from "@codemirror/lang-css";
+import { html } from "@codemirror/lang-html";
+import { json } from "@codemirror/lang-json";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import {
+  AlertTriangle,
+  Check,
+  Eye,
+  Loader2,
+  Pencil,
+  RotateCcw,
+  Save,
+  X,
+} from "lucide-react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+import { type EditorMode, useEditorStore } from "@/stores/editorStore";
+import { useThemeStore } from "@/stores/themeStore";
+
+interface FileEditorPaneProps {
+  sessionId: string;
+  cwd: string;
+  onDragMouseDown: (event: ReactMouseEvent) => void;
+}
+
+export function FileEditorPane({ sessionId, cwd, onDragMouseDown }: FileEditorPaneProps) {
+  const session = useEditorStore((state) => state.sessions[sessionId]);
+  const {
+    save,
+    close,
+    revert,
+    setMode,
+    setBuffer,
+    setFocusWithin,
+    setClosePrompt,
+    clearError,
+    openFile,
+  } = useEditorStore();
+
+  const activePath = session?.activePath;
+  const dirty = !!session && session.buffer !== session.loadedContent;
+  const isMarkdown = !!activePath && /\.(md|mdx|markdown)$/i.test(activePath);
+  const mode = session?.mode ?? "preview";
+  const displayPath = activePath ? pathRelativeTo(activePath, cwd) : "";
+
+  if (!session || !activePath) return null;
+
+  const requestClose = () => {
+    close(sessionId);
+  };
+
+  return (
+    <aside
+      className="file-editor-pane relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background"
+      onFocusCapture={() => setFocusWithin(sessionId, true)}
+      onBlurCapture={(event) => {
+        if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
+          setFocusWithin(sessionId, false);
+        }
+      }}
+    >
+      <div
+        className="h-2 w-full shrink-0 cursor-grab"
+        data-tauri-drag-region
+        onMouseDown={onDragMouseDown}
+      />
+      <div
+        className="flex h-10 shrink-0 items-center justify-between bg-cc-surface/60 px-3 text-xs text-cc-muted"
+        data-tauri-drag-region
+        onMouseDown={onDragMouseDown}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-cc-foreground">{basename(activePath)}</span>
+          {displayPath && displayPath !== basename(activePath) ? (
+            <span className="min-w-0 truncate font-mono text-[10.5px] text-cc-muted/60">{displayPath}</span>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {isMarkdown ? (
+            <ModeToggle mode={mode} onModeChange={(nextMode) => setMode(sessionId, nextMode)} />
+          ) : null}
+          <IconButton
+            label="Revert"
+            disabled={!dirty || session.saving}
+            onClick={() => revert(sessionId)}
+          >
+            <RotateCcw size={13} />
+          </IconButton>
+          <IconButton
+            label="Save"
+            active={dirty}
+            disabled={!dirty || session.saving}
+            onClick={() => void save(sessionId)}
+          >
+            {session.saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+          </IconButton>
+          <IconButton label="Close file" onClick={requestClose}>
+            <X size={13} />
+          </IconButton>
+        </div>
+      </div>
+      {session.closePrompt ? (
+        <InlineNotice
+          tone="warning"
+          message="Discard unsaved changes?"
+          primaryLabel="Discard"
+          onPrimary={() => close(sessionId, { force: true })}
+          onDismiss={() => setClosePrompt(sessionId, false)}
+        />
+      ) : null}
+
+      {session.error ? (
+        <InlineNotice
+          tone={session.conflict ? "warning" : "error"}
+          message={session.error}
+          primaryLabel={session.conflict ? "Reload" : "Dismiss"}
+          onPrimary={() => {
+            if (session.conflict) {
+              void openFile(sessionId, activePath);
+            } else {
+              clearError(sessionId);
+            }
+          }}
+          onDismiss={() => clearError(sessionId)}
+        />
+      ) : null}
+
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {session.loading ? (
+          <div className="flex h-full items-center justify-center gap-2 text-xs text-cc-muted">
+            <Loader2 size={14} className="animate-spin" />
+            Loading
+          </div>
+        ) : isMarkdown && mode === "preview" ? (
+          <MarkdownPreview contents={session.buffer} />
+        ) : (
+          <CodeMirrorEditor
+            path={activePath}
+            value={session.buffer}
+            onChange={(contents) => setBuffer(sessionId, contents)}
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function ModeToggle({
+  mode,
+  onModeChange,
+}: {
+  mode: EditorMode;
+  onModeChange: (mode: EditorMode) => void;
+}) {
+  return (
+    <div className="mr-1 flex h-6 items-center gap-0.5">
+      <button
+        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors duration-150 ${
+          mode === "preview"
+            ? "bg-cc-surface-strong text-cc-foreground"
+            : "text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+        }`}
+        onClick={() => onModeChange("preview")}
+        title="Preview"
+      >
+        <Eye size={12} />
+      </button>
+      <button
+        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors duration-150 ${
+          mode === "edit"
+            ? "bg-cc-surface-strong text-cc-foreground"
+            : "text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+        }`}
+        onClick={() => onModeChange("edit")}
+        title="Edit"
+      >
+        <Pencil size={12} />
+      </button>
+    </div>
+  );
+}
+
+function IconButton({
+  label,
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      className={`flex h-6 w-6 items-center justify-center rounded text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-cc-muted ${
+        active ? "text-cc-accent" : ""
+      }`}
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+    >
+      {children}
+    </button>
+  );
+}
+
+function InlineNotice({
+  tone,
+  message,
+  primaryLabel,
+  onPrimary,
+  onDismiss,
+}: {
+  tone: "warning" | "error";
+  message: string;
+  primaryLabel: string;
+  onPrimary: () => void;
+  onDismiss: () => void;
+}) {
+  const toneClass = tone === "warning"
+    ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
+    : "border-red-400/20 bg-red-400/10 text-red-100";
+
+  return (
+    <div className={`flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs ${toneClass}`}>
+      <AlertTriangle size={13} className="shrink-0" />
+      <span className="min-w-0 flex-1 truncate">{message}</span>
+      <button
+        className="flex h-6 items-center gap-1 rounded-md border border-current/20 px-2 text-[11px] hover:bg-current/10"
+        onClick={onPrimary}
+      >
+        <Check size={11} />
+        {primaryLabel}
+      </button>
+      <button
+        className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-current/10"
+        onClick={onDismiss}
+        title="Dismiss"
+      >
+        <X size={11} />
+      </button>
+    </div>
+  );
+}
+
+function MarkdownPreview({ contents }: { contents: string }) {
+  return (
+    <div className="h-full overflow-y-auto px-12 py-14">
+      <div className="markdown-preview mx-auto max-w-[64ch]">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          {contents}
+        </ReactMarkdown>
+      </div>
+    </div>
+  );
+}
+
+const markdownComponents: Components = {
+  h1: ({ children }) => (
+    <h1 className="mb-6 mt-0 text-[28px] font-semibold leading-[1.15] tracking-[-0.02em] text-cc-foreground">
+      {children}
+    </h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mb-3 mt-10 text-[17px] font-semibold leading-snug tracking-tight text-cc-foreground">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mb-2 mt-7 text-[14px] font-semibold leading-snug tracking-tight text-cc-foreground">{children}</h3>
+  ),
+  p: ({ children }) => (
+    <p className="my-4 text-[14px] leading-[1.75] text-cc-muted">{children}</p>
+  ),
+  a: ({ href, children }) => (
+    <a className="text-cc-accent underline decoration-cc-accent/40 underline-offset-2 transition-colors hover:decoration-cc-accent" href={href}>
+      {children}
+    </a>
+  ),
+  ul: ({ children }) => (
+    <ul className="my-4 list-disc space-y-1.5 pl-5 text-[14px] leading-[1.7] text-cc-muted marker:text-cc-muted/40">
+      {children}
+    </ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="my-4 list-decimal space-y-1.5 pl-5 text-[14px] leading-[1.7] text-cc-muted marker:text-cc-muted/40">
+      {children}
+    </ol>
+  ),
+  li: ({ children }) => <li>{children}</li>,
+  blockquote: ({ children }) => (
+    <blockquote className="relative my-7 pl-6 text-[14px] leading-[1.75] text-cc-foreground/85">
+      <span aria-hidden className="absolute -left-1 -top-3 select-none font-serif text-[44px] leading-none text-cc-accent/40">
+        &ldquo;
+      </span>
+      {children}
+    </blockquote>
+  ),
+  code: ({ className, children, ...props }) => {
+    if (!className) {
+      return (
+        <code className="rounded bg-cc-surface-strong/70 px-1.5 py-0.5 font-mono text-[0.88em] text-cc-foreground" {...props}>
+          {children}
+        </code>
+      );
+    }
+
+    return (
+      <code className={`font-mono text-[12.5px] leading-[1.6] text-cc-foreground ${className ?? ""}`} {...props}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }) => (
+    <pre className="my-5 overflow-x-auto rounded-md bg-cc-surface p-4">{children}</pre>
+  ),
+  table: ({ children }) => (
+    <div className="my-5 overflow-x-auto">
+      <table className="w-full border-collapse text-[13px] text-cc-muted">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => (
+    <thead className="border-b border-cc-border/60">{children}</thead>
+  ),
+  tbody: ({ children }) => (
+    <tbody className="divide-y divide-cc-border/30">{children}</tbody>
+  ),
+  th: ({ children }) => (
+    <th className="px-3 py-2 text-left text-[12px] font-medium uppercase tracking-wide text-cc-muted/80">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => <td className="px-3 py-2 align-top">{children}</td>,
+  hr: () => <hr className="my-8 border-cc-border/40" />,
+};
+
+const EDITOR_FONT_SIZE: Record<"small" | "medium" | "large", number> = {
+  small: 12,
+  medium: 13.5,
+  large: 15,
+};
+
+function CodeMirrorEditor({
+  path,
+  value,
+  onChange,
+}: {
+  path: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+  const fontSize = useThemeStore((state) => state.fontSize);
+  const fontPx = EDITOR_FONT_SIZE[fontSize];
+  const extensions = useMemo(() => editorExtensions(path, fontPx), [path, fontPx]);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const view = new EditorView({
+      parent: containerRef.current,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          ...extensions,
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              onChangeRef.current(update.state.doc.toString());
+            }
+          }),
+        ],
+      }),
+    });
+    viewRef.current = view;
+
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, [extensions]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current === value) return;
+
+    view.dispatch({
+      changes: { from: 0, to: current.length, insert: value },
+    });
+  }, [value]);
+
+  return <div ref={containerRef} className="h-full min-h-0" />;
+}
+
+function editorExtensions(path: string, fontPx: number): Extension[] {
+  const language = languageForPath(path);
+  const isMarkdownFile = /\.(md|mdx|markdown)$/i.test(path);
+
+  return [
+    ...(isMarkdownFile ? [] : [lineNumbers()]),
+    history(),
+    drawSelection(),
+    rectangularSelection(),
+    indentOnInput(),
+    bracketMatching(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    EditorView.lineWrapping,
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+    buildEditorTheme(fontPx),
+    ...(language ? [language] : []),
+  ];
+}
+
+function languageForPath(path: string): Extension | null {
+  const lower = path.toLowerCase();
+  if (/\.(md|mdx|markdown)$/.test(lower)) return markdown();
+  if (/\.(js|jsx|mjs|cjs|ts|tsx)$/.test(lower)) return javascript({ jsx: true, typescript: lower.endsWith(".ts") || lower.endsWith(".tsx") });
+  if (lower.endsWith(".json")) return json();
+  if (/\.(css|scss|sass)$/.test(lower)) return css();
+  if (/\.(html|htm|xml|svg)$/.test(lower)) return html();
+  return null;
+}
+
+function buildEditorTheme(fontPx: number) {
+  return EditorView.theme({
+    "&": {
+      height: "100%",
+      backgroundColor: "rgb(var(--cc-background-rgb))",
+      color: "rgb(var(--cc-foreground-rgb))",
+      fontSize: `${fontPx}px`,
+      caretColor: "rgb(var(--cc-foreground-rgb))",
+    },
+    ".cm-scroller": {
+      fontFamily: 'var(--cc-font-mono), "SF Mono", Menlo, Monaco, Consolas, monospace',
+      lineHeight: "1.6",
+    },
+    ".cm-content": {
+      padding: "20px 0",
+      caretColor: "rgb(var(--cc-foreground-rgb))",
+    },
+    ".cm-line": {
+      padding: "0 20px",
+      overflowWrap: "anywhere",
+    },
+    ".cm-cursor, .cm-dropCursor": {
+      borderLeftColor: "rgb(var(--cc-foreground-rgb))",
+      borderLeftWidth: "1.5px",
+    },
+    "&.cm-focused .cm-cursor": {
+      borderLeftColor: "rgb(var(--cc-foreground-rgb))",
+    },
+    ".cm-gutters": {
+      backgroundColor: "rgb(var(--cc-background-rgb))",
+      borderRight: "none",
+      color: "rgba(var(--cc-muted-rgb) / 0.3)",
+    },
+    ".cm-activeLine": {
+      backgroundColor: "rgba(var(--cc-surface-strong-rgb) / 0.28)",
+    },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
+      backgroundColor: "rgba(var(--cc-accent-rgb) / 0.22)",
+    },
+    "&.cm-focused": {
+      outline: "none",
+    },
+  });
+}
+
+function basename(path: string) {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+function pathRelativeTo(path: string, cwd: string) {
+  if (cwd && path.startsWith(cwd)) {
+    return path.slice(cwd.length).replace(/^\//, "") || basename(path);
+  }
+
+  return path;
+}

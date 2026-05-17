@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sogo · Refined Layout</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #11111b;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 48px;
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-thumb { background: rgba(69,71,90,0.8); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// Catppuccin Mocha — exact values from themeStore.ts
+const M = {
+  bg:     '#1e1e2e',  // Base
+  s0:     '#181825',  // Mantle  — panel background
+  s1:     '#313244',  // Surface0 — elevated cards / hover
+  s2:     '#45475a',  // Surface1 — borders, dividers
+  t0:     '#6c7086',  // Overlay0 — very dim text
+  t1:     '#a6adc8',  // Subtext0 — muted text
+  t2:     '#cdd6f4',  // Text     — primary
+
+  // Accent palette
+  blue:   '#89b4fa',
+  mauve:  '#cba6f7',
+  green:  '#a6e3a1',
+  teal:   '#94e2d5',
+  yellow: '#f9e2af',
+  peach:  '#fab387',
+  red:    '#f38ba8',
+  sky:    '#89dceb',
+
+  // Borders
+  b0:  'rgba(69,71,90,0.4)',
+  b1:  'rgba(69,71,90,0.65)',
+  b2:  'rgba(205,214,244,0.06)',
+};
+
+const MONO = '"SF Mono","JetBrains Mono",Menlo,monospace';
+const SANS = '-apple-system,"SF Pro Text","Helvetica Neue",sans-serif';
+
+// ─── Shared atoms ──────────────────────────────────────────────────────
+
+// Pill segment control — replaces individual icon buttons for panel toggle
+function SegmentedPill({ options, active, small }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center',
+      background: M.s0,
+      borderRadius: small ? 8 : 9,
+      padding: 2,
+      border: `1px solid ${M.b1}`,
+      gap: 1,
+    }}>
+      {options.map((opt, i) => (
+        <div key={i} style={{
+          display: 'flex', alignItems: 'center', gap: 5,
+          padding: small ? '4px 10px' : '4px 11px',
+          borderRadius: small ? 6 : 7,
+          background: opt.id === active ? M.s1 : 'transparent',
+          cursor: 'pointer',
+          transition: 'background 0.1s',
+        }}>
+          {opt.icon && (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d={opt.icon} stroke={opt.id === active ? M.t2 : M.t0} strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+          <span style={{
+            fontSize: 11,
+            fontWeight: opt.id === active ? 500 : 400,
+            color: opt.id === active ? M.t2 : M.t0,
+            letterSpacing: '0.01em',
+          }}>{opt.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Status dot
+function Dot({ color, size = 6 }) {
+  return <div style={{ width: size, height: size, borderRadius: '50%', background: color, flexShrink: 0 }}/>;
+}
+
+// ─── MAIN WINDOW ───────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'sogo', label: 'sogo-app', status: 'busy' },
+  { id: 'scratch', label: 'scratch', status: 'idle' },
+];
+
+function MainHeader() {
+  const panelOpts = [
+    { id: 'files', label: 'Files', icon: 'M2 2h5l2 2v7H2V2zm0 0v9h7M3.5 5.5h4M3.5 7.5h2.5' },
+    { id: 'vault', label: 'Vault', icon: 'M6 1.5L1.5 4v5L6 11.5 10.5 9V4zM6 1.5v10M1.5 4l9 5M10.5 4l-9 5' },
+    { id: 'skills', label: 'Skills', icon: 'M6 1l1.2 3.6H11L8 6.9l1.2 3.6L6 8.2l-3.2 2.3L4 6.9 1 4.6h3.8z' },
+  ];
+
+  return (
+    <div style={{
+      height: 42,
+      display: 'flex', alignItems: 'center',
+      padding: '0 10px 0 14px',
+      borderBottom: `1px solid ${M.b0}`,
+      flexShrink: 0,
+      gap: 10,
+    }}>
+      {/* Logo */}
+      <div style={{
+        width: 26, height: 26, borderRadius: 7,
+        background: M.s0,
+        border: `1px solid ${M.b1}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexShrink: 0,
+      }}>
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M1.5 10.5Q5 2 12 2" stroke={M.t2} strokeWidth="1.4" strokeLinecap="round"/>
+          <circle cx="6.5" cy="6.5" r="1.6" fill={M.blue}/>
+        </svg>
+      </div>
+
+      {/* Tab strip — pill */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 1,
+        background: M.s0,
+        borderRadius: 10, padding: 2,
+        border: `1px solid ${M.b1}`,
+      }}>
+        {TABS.map((tab, i) => {
+          const dotColor = tab.status === 'busy' ? M.green : M.t0;
+          const isActive = i === 0;
+          return (
+            <div key={tab.id} style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '4px 12px', borderRadius: 8,
+              background: isActive ? M.s1 : 'transparent',
+              cursor: 'pointer',
+            }}>
+              <Dot color={dotColor} size={5}/>
+              <span style={{ fontSize: 12, fontWeight: isActive ? 500 : 400, color: isActive ? M.t2 : M.t0 }}>
+                {tab.label}
+              </span>
+              {isActive && (
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.3, cursor: 'pointer' }}>
+                  <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" stroke={M.t1} strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+              )}
+            </div>
+          );
+        })}
+        <div style={{ padding: '3px 8px', fontSize: 13, color: M.t0, lineHeight: 1, cursor: 'pointer' }}>+</div>
+      </div>
+
+      <div style={{ flex: 1 }}/>
+
+      {/* Panel segment control — refined from three separate icon buttons */}
+      <SegmentedPill options={panelOpts} active="files" />
+
+      <div style={{ width: 1, height: 16, background: M.b1, margin: '0 4px' }}/>
+
+      {/* Window controls */}
+      <div style={{ display: 'flex', gap: 2 }}>
+        {[
+          { title: 'Pin', path: 'M4 1v4L2 7h8L8 5V1M6 7v4' },
+          { title: 'Minimize', path: 'M2 6h8' },
+          { title: 'Expand', path: 'M1 4V1h3M1 1l4 4M9 8v3H6M10 10l-4-4' },
+        ].map((btn, i) => (
+          <div key={i} title={btn.title} style={{
+            width: 28, height: 28, borderRadius: 6,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer',
+          }}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d={btn.path} stroke={M.t0} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SessionBar() {
+  return (
+    <div style={{
+      height: 36,
+      display: 'flex', alignItems: 'center',
+      padding: '0 12px',
+      borderBottom: `1px solid ${M.b0}`,
+      flexShrink: 0,
+      gap: 8,
+      background: `${M.s0}88`,
+    }}>
+      <Dot color={M.green} size={6}/>
+      <span style={{ fontSize: 11.5, fontWeight: 500, color: M.t2 }}>busy</span>
+      <span style={{ fontSize: 11, color: M.t0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        ~/projects/sogo-app
+      </span>
+      <span style={{
+        fontSize: 9.5, fontFamily: MONO, color: M.t0,
+        padding: '2px 6px', borderRadius: 5,
+        border: `1px solid ${M.b1}`,
+        display: 'none', // hide on narrow viewport
+      }}>a3f8...</span>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          padding: '3px 9px', borderRadius: 6,
+          border: `1px solid ${M.b1}`,
+          cursor: 'pointer',
+        }}>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <rect x="1" y="1" width="8" height="8" rx="1" stroke={M.t0} strokeWidth="1.1"/>
+          </svg>
+          <span style={{ fontSize: 11, color: M.t0 }}>Interrupt</span>
+        </div>
+        <div style={{
+          width: 26, height: 26, borderRadius: 6,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer',
+        }}>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke={M.t0} strokeWidth="1.3" strokeLinecap="round"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// File viewer — left side of split
+const MD_CONTENT = [
+  { type: 'h1', text: 'Sogo — Implementation Notes' },
+  { type: 'p',  text: 'Sogo wraps Claude Code as a native macOS app using Tauri v2. Sessions spawn a PTY process running claude and pipe output to an xterm.js terminal.' },
+  { type: 'h2', text: 'File System' },
+  { type: 'p',  text: 'The list_directory Rust command returns FileEntry structs for lazy-loading the file tree. Fetching on expand keeps initial load fast regardless of workspace size.' },
+  { type: 'code', text: 'pub async fn list_directory(path: String)\n  -> Result<Vec<FileEntry>> {' },
+  { type: 'h2', text: 'Capability Requirements' },
+  { type: 'p',  text: 'The default.json capability file must include list_directory in the allowlist or the invoke call will be denied by the Tauri security layer.' },
+  { type: 'list', items: ['src-tauri/capabilities/default.json', 'invoke_handler registration in lib.rs', 'Frontend: @tauri-apps/api/core invoke()'] },
+];
+
+function FileViewer() {
+  return (
+    <div style={{
+      width: 296,
+      flexShrink: 0,
+      borderRight: `1px solid ${M.b0}`,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      background: M.bg,
+    }}>
+      {/* File breadcrumb bar */}
+      <div style={{
+        height: 36,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 14px',
+        borderBottom: `1px solid ${M.b0}`,
+        flexShrink: 0,
+        background: `${M.s0}60`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+            <path d="M1 1h4l1.5 1.5H10v7H1V1z" stroke={M.blue} strokeWidth="1" strokeLinejoin="round"/>
+            <path d="M3 5h5M3 7h3" stroke={M.blue} strokeWidth="1" strokeLinecap="round" opacity="0.6"/>
+          </svg>
+          <span style={{ fontSize: 11, color: M.t1, fontFamily: MONO }}>IMPLEMENTATION.md</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <span style={{ fontSize: 10.5, color: M.t0, cursor: 'pointer' }}>preview</span>
+          <span style={{ fontSize: 10.5, color: M.blue, cursor: 'pointer' }}>edit</span>
+        </div>
+      </div>
+
+      {/* Rendered markdown content */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '18px 18px 24px' }}>
+        {MD_CONTENT.map((block, i) => {
+          if (block.type === 'h1') return (
+            <div key={i} style={{
+              fontSize: 15, fontWeight: 700, color: M.t2,
+              marginBottom: 10, lineHeight: 1.4,
+            }}>{block.text}</div>
+          );
+          if (block.type === 'h2') return (
+            <div key={i} style={{
+              fontSize: 12, fontWeight: 600, color: M.t1,
+              marginTop: 16, marginBottom: 7,
+              textTransform: 'uppercase', letterSpacing: '0.07em',
+              paddingTop: 12, borderTop: `1px solid ${M.b0}`,
+            }}>{block.text}</div>
+          );
+          if (block.type === 'p') return (
+            <div key={i} style={{
+              fontSize: 12.5, lineHeight: 1.7, color: M.t1,
+              marginBottom: 10, textWrap: 'pretty',
+            }}>{block.text}</div>
+          );
+          if (block.type === 'code') return (
+            <div key={i} style={{
+              fontFamily: MONO, fontSize: 11,
+              color: M.teal, lineHeight: 1.65,
+              background: M.s0, border: `1px solid ${M.b0}`,
+              borderRadius: 6, padding: '8px 12px',
+              marginBottom: 10, whiteSpace: 'pre',
+            }}>{block.text}</div>
+          );
+          if (block.type === 'list') return (
+            <ul key={i} style={{ paddingLeft: 18, marginBottom: 10 }}>
+              {block.items.map((item, j) => (
+                <li key={j} style={{
+                  fontSize: 12, color: M.t1,
+                  lineHeight: 1.7, fontFamily: MONO,
+                  fontSize: 11,
+                }}>{item}</li>
+              ))}
+            </ul>
+          );
+          return null;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Terminal — right side of split (Claude Code PTY output)
+const TERMINAL_LINES = [
+  { color: M.t0,    text: '$ claude --continue --files src/ src-tauri/src/' },
+  { color: M.t0,    text: '◇  Loading context from 47 files...' },
+  { color: M.green, text: '✓  Context ready · 4.2s' },
+  { color: null },
+  { color: M.blue,  text: '● Reading: src-tauri/capabilities/default.json' },
+  { color: null },
+  { color: M.mauve, text: '◆  Claude  ─────────────────────────────────' },
+  { color: null },
+  { color: M.t2,    text: '   The FilesPanel lazy-loading approach is' },
+  { color: M.t2,    text: '   correct — fetching contents on expand.' },
+  { color: null },
+  { color: M.t2,    text: '   One thing to verify: list_directory needs' },
+  { color: M.t2,    text: '   to appear in the capability allowlist.' },
+  { color: null },
+  { color: M.t0,    text: '● Reading: src-tauri/capabilities/default.json' },
+  { color: null },
+  { color: M.t2,    text: '   Found it — registered correctly. The' },
+  { color: M.t2,    text: '   implementation is complete.' },
+  { color: null },
+  { color: M.t2,    text: '   Shall I add error handling for the case' },
+  { color: M.t2,    text: '   where a directory becomes inaccessible' },
+  { color: M.t2,    text: '   after initial load?' },
+];
+
+function Terminal() {
+  return (
+    <div style={{
+      flex: 1, minWidth: 0,
+      display: 'flex', flexDirection: 'column',
+      overflow: 'hidden',
+      background: M.bg,
+    }}>
+      {/* Terminal output */}
+      <div style={{
+        flex: 1, overflowY: 'auto',
+        padding: '16px 18px',
+        fontFamily: MONO, fontSize: 12.5, lineHeight: 1.85,
+      }}>
+        {TERMINAL_LINES.map((line, i) => {
+          if (!line.color && !line.text) return <div key={i} style={{ height: 4 }}/>;
+          return (
+            <div key={i} style={{ color: line.color }}>{line.text}</div>
+          );
+        })}
+        {/* Prompt */}
+        <div style={{ marginTop: 14 }}>
+          <div style={{
+            border: `1px solid ${M.s2}`,
+            borderRadius: 7,
+            padding: '7px 12px',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span style={{ color: M.t0, fontSize: 12 }}>{'>'}</span>
+            <span style={{ width: 7, height: 14, background: M.blue, opacity: 0.5, borderRadius: 1, display: 'inline-block' }}/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MainWindow() {
+  return (
+    <div style={{
+      width: 760,
+      height: 640,
+      borderRadius: 22,
+      overflow: 'hidden',
+      background: M.bg,
+      border: `1px solid ${M.b1}`,
+      boxShadow: `0 32px 80px rgba(0,0,0,0.6), 0 0 0 0.5px ${M.b2}`,
+      display: 'flex', flexDirection: 'column',
+      flexShrink: 0,
+    }}>
+      {/* 2px drag strip at top */}
+      <div style={{ height: 2, background: 'transparent', flexShrink: 0 }}/>
+      <MainHeader />
+      <SessionBar />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <FileViewer />
+        {/* Resize handle */}
+        <div style={{
+          width: 3,
+          background: M.b0,
+          cursor: 'col-resize',
+          flexShrink: 0,
+          position: 'relative',
+        }}>
+          <div style={{
+            position: 'absolute',
+            top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 3, height: 24,
+            borderRadius: 2,
+            background: M.s2,
+          }}/>
+        </div>
+        <Terminal />
+      </div>
+    </div>
+  );
+}
+
+// ─── SIDE PANEL ────────────────────────────────────────────────────────
+
+const FILE_TREE = [
+  { indent: 0, type: 'dir', name: 'sogo-app', open: true },
+  { indent: 1, type: 'dir', name: 'src', open: true },
+  { indent: 2, type: 'dir', name: 'components', open: false },
+  { indent: 2, type: 'file', name: 'App.tsx', modified: true },
+  { indent: 2, type: 'file', name: 'main.tsx' },
+  { indent: 2, type: 'file', name: 'types.ts' },
+  { indent: 1, type: 'dir', name: 'src-tauri', open: true },
+  { indent: 2, type: 'dir', name: 'src', open: false },
+  { indent: 2, type: 'dir', name: 'capabilities', open: false },
+  { indent: 2, type: 'file', name: 'Cargo.toml' },
+  { indent: 0, type: 'file', name: 'IMPLEMENTATION.md', selected: true },
+  { indent: 0, type: 'file', name: 'package.json' },
+];
+
+function SidePanel() {
+  const panelOpts = [
+    { id: 'files', label: 'Files' },
+    { id: 'vault', label: 'Vault' },
+    { id: 'skills', label: 'Skills' },
+  ];
+
+  return (
+    <div style={{
+      width: 336,
+      height: 640,
+      borderRadius: 20,
+      overflow: 'hidden',
+      background: M.s0,
+      border: `1px solid ${M.b1}`,
+      boxShadow: `0 32px 80px rgba(0,0,0,0.5), 0 0 0 0.5px ${M.b2}`,
+      display: 'flex', flexDirection: 'column',
+      flexShrink: 0,
+    }}>
+      {/* 2px drag strip */}
+      <div style={{ height: 2, flexShrink: 0 }}/>
+
+      {/* Panel header */}
+      <div style={{
+        height: 42,
+        display: 'flex', alignItems: 'center',
+        padding: '0 10px',
+        borderBottom: `1px solid ${M.b0}`,
+        gap: 8,
+        flexShrink: 0,
+      }}>
+        {/* Pill segment control for Files/Vault/Skills */}
+        <div style={{
+          flex: 1,
+          display: 'flex', alignItems: 'center', gap: 1,
+          background: `${M.bg}88`,
+          borderRadius: 9, padding: 2,
+          border: `1px solid ${M.b1}`,
+        }}>
+          {panelOpts.map((opt, i) => (
+            <div key={i} style={{
+              flex: 1, textAlign: 'center',
+              padding: '4px 0', borderRadius: 7,
+              background: i === 0 ? M.s1 : 'transparent',
+              cursor: 'pointer',
+              fontSize: 11.5,
+              fontWeight: i === 0 ? 500 : 400,
+              color: i === 0 ? M.t2 : M.t0,
+            }}>{opt.label}</div>
+          ))}
+        </div>
+
+        {/* Close */}
+        <div style={{
+          width: 28, height: 28, borderRadius: 7,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer',
+        }}>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke={M.t0} strokeWidth="1.3" strokeLinecap="round"/>
+          </svg>
+        </div>
+      </div>
+
+      {/* File tree */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
+        {FILE_TREE.map((item, i) => {
+          const isSelected = item.selected;
+          return (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '3.5px 12px',
+              paddingLeft: 12 + item.indent * 14,
+              cursor: 'pointer',
+              background: isSelected ? `${M.blue}14` : 'transparent',
+              borderLeft: isSelected ? `2px solid ${M.blue}` : '2px solid transparent',
+            }}>
+              {item.type === 'dir' ? (
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                  <path
+                    d={item.open ? 'M1 2.5l3 3 3-3' : 'M2.5 1l3 3-3 3'}
+                    stroke={M.t0} strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"
+                  />
+                </svg>
+              ) : (
+                <span style={{ width: 8, flexShrink: 0 }}/>
+              )}
+              <span style={{
+                fontFamily: MONO, fontSize: 11.5,
+                color: isSelected ? M.blue : item.type === 'dir' ? M.t1 : M.t0,
+                fontWeight: isSelected ? 500 : 400,
+                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{item.name}</span>
+              {item.modified && <Dot color={M.yellow} size={5}/>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Root ──────────────────────────────────────────────────────────────
+
+function Root() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 28 }}>
+      <div style={{ fontSize: 9, color: '#2a2a3c', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+        Sogo · Refined Layout · Mocha · File Viewer Split
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <MainWindow />
+        <SidePanel />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>

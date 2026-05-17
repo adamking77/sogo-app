@@ -85,7 +85,7 @@ export function TabStrip({ tabs, activeTabId, collapsed, onSelect, onNewTab, onC
             aria-selected={tab.id === activeTabId}
             className={`group flex h-7 max-w-44 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-left text-xs transition ${
               tab.id === activeTabId
-                ? "border-cc-border bg-cc-surface-strong text-cc-foreground shadow-sm"
+                ? "border-cc-border bg-cc-surface-strong text-cc-foreground"
                 : "border-transparent text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
             }`}
             onClick={() => onSelect(tab.id)}
@@ -129,7 +129,7 @@ export function TabStrip({ tabs, activeTabId, collapsed, onSelect, onNewTab, onC
             )}
             <button
               type="button"
-              className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 hover:bg-cc-background/20 hover:opacity-100 group-hover:opacity-50"
+              className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-30 transition-opacity hover:bg-cc-background/20 hover:opacity-100 group-hover:opacity-60"
               onClick={(event) => {
                 event.stopPropagation();
                 onClose(tab.id);
@@ -143,11 +143,11 @@ export function TabStrip({ tabs, activeTabId, collapsed, onSelect, onNewTab, onC
         })}
       </div>
       <button
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
         onClick={onNewTab}
         title="New session"
       >
-        <Plus size={16} />
+        <Plus size={15} />
       </button>
     </div>
   );
