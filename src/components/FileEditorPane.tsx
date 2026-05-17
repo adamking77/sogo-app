@@ -470,6 +470,7 @@ function buildEditorTheme(fontPx: number) {
     ".cm-scroller": {
       fontFamily: 'var(--cc-font-mono), "SF Mono", Menlo, Monaco, Consolas, monospace',
       lineHeight: "1.6",
+      fontVariantLigatures: "contextual",
     },
     ".cm-content": {
       padding: "20px 0",

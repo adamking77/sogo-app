@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { LigaturesAddon } from "@xterm/addon-ligatures";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 
@@ -75,6 +76,7 @@ export function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(containerRef.current);
+    terminal.loadAddon(new LigaturesAddon());
     terminal.onData((data) => {
       if (!isTauriRuntime()) return;
       const now = performance.now();
