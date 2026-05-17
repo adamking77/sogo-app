@@ -51,10 +51,11 @@ fn read_runtime_config() -> RuntimeConfig {
 #[tauri::command]
 fn read_claude_inventory() -> ClaudeInventory {
     let claude_home = home_dir().join(".claude");
+    let user_config = home_dir().join(".claude.json");
 
     ClaudeInventory {
         skills: read_skills(&claude_home.join("skills")),
-        mcp_servers: read_mcp_servers(&claude_home.join("settings.json")),
+        mcp_servers: read_mcp_servers(&user_config),
     }
 }
 
