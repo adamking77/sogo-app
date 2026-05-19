@@ -26,15 +26,17 @@ import type { SogoTab } from "@/types";
 type ResizeEdge = "North" | "NorthEast" | "East" | "SouthEast" | "South" | "SouthWest" | "West" | "NorthWest";
 
 const TERMINAL_ONLY_WINDOW_MIN_WIDTH = 440;
-const PANEL_WINDOW_MIN_WIDTH = 760;
-const EDITOR_WINDOW_MIN_WIDTH = 840;
-const EDITOR_PANEL_WINDOW_MIN_WIDTH = 1120;
 const TERMINAL_MIN_WIDTH_SOLO = 420;
 const TERMINAL_MIN_WIDTH_WITH_EDITOR = 300;
 const FILE_EDITOR_MIN_WIDTH = 520;
 const FILE_EDITOR_MAX_WIDTH = 1080;
 const FILE_EDITOR_DEFAULT_WIDTH = 760;
 const PANE_GAP = 8;
+const RIGHT_SIDEBAR_WIDTH = 336;
+const PANEL_WINDOW_MIN_WIDTH = TERMINAL_MIN_WIDTH_SOLO + RIGHT_SIDEBAR_WIDTH + PANE_GAP;
+const EDITOR_WINDOW_MIN_WIDTH = 840;
+const EDITOR_PANEL_WINDOW_MIN_WIDTH =
+  TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP * 2;
 
 const FONT_SIZE = {
   small: 12,
@@ -54,8 +56,12 @@ function readStoredNumber(key: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function clampFileEditorWidth(width: number, toolPanelOpen: boolean) {
-  const toolPanelWidth = toolPanelOpen ? 336 : 0;
+  const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
   const gapCount = toolPanelOpen ? 2 : 1;
   const maxAvailable = window.innerWidth - TERMINAL_MIN_WIDTH_WITH_EDITOR - toolPanelWidth - PANE_GAP * gapCount;
   const effectiveMin = Math.min(FILE_EDITOR_MIN_WIDTH, Math.max(220, maxAvailable));
@@ -256,21 +262,34 @@ function App() {
   const growWindowFor = useCallback(async (deltaW: number) => {
     if (!tauriRuntime || deltaW <= 0) return;
     try {
-      const { LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
+      const { LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
       const appWindow = getCurrentWindow();
-      const [size, scaleFactor, monitor] = await Promise.all([
+      const [size, scaleFactor, position, monitor] = await Promise.all([
         appWindow.innerSize(),
         appWindow.scaleFactor(),
+        appWindow.outerPosition(),
         currentMonitor(),
       ]);
       const currentW = size.width / scaleFactor;
+      const currentX = position.x / scaleFactor;
       const workAreaW = monitor?.workArea?.size?.width
         ? monitor.workArea.size.width / scaleFactor
         : window.screen.availWidth;
+      const workAreaX = monitor?.workArea?.position?.x
+        ? monitor.workArea.position.x / scaleFactor
+        : 0;
       const maxW = workAreaW - 24;
       const nextW = Math.min(currentW + deltaW, maxW);
-      if (nextW - currentW < 8) return;
-      await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
+      if (nextW - currentW >= 8) {
+        await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
+      }
+
+      const maxX = workAreaX + workAreaW - nextW - 12;
+      if (currentX > maxX) {
+        await appWindow.setPosition(
+          new LogicalPosition(Math.round(Math.max(workAreaX + 12, maxX)), Math.round(position.y / scaleFactor)),
+        );
+      }
     } catch {
       // ignore
     }
@@ -410,37 +429,9 @@ function App() {
     if (activePanel) setLastOpenedPanel(activePanel);
   }, [activePanel]);
 
-  const togglePanel = useCallback(async (panel: "vault" | "claude" | "files") => {
-    const wasOpen = !!activePanel;
-    const willOpen = activePanel !== panel;
-    const isFreshOpen = !wasOpen && willOpen;
-
-    if (isFreshOpen && tauriRuntime) {
-      try {
-        const { LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
-        const appWindow = getCurrentWindow();
-        const [size, scaleFactor, monitor] = await Promise.all([
-          appWindow.innerSize(),
-          appWindow.scaleFactor(),
-          currentMonitor(),
-        ]);
-        const currentW = size.width / scaleFactor;
-        const workAreaW = monitor?.workArea?.size?.width
-          ? monitor.workArea.size.width / scaleFactor
-          : window.screen.availWidth;
-        const desiredW = currentW + 336 + PANE_GAP;
-        const nextW = Math.min(desiredW, workAreaW - 24);
-        if (nextW > currentW + 8) {
-          await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
-          prevPanelOpenRef.current = true;
-        }
-      } catch {
-        // ignore — fall through to setState; the existing useEffect will catch up
-      }
-    }
-
+  const togglePanel = useCallback((panel: "vault" | "claude" | "files") => {
     setActivePanel((current) => (current === panel ? null : panel));
-  }, [activePanel, tauriRuntime]);
+  }, []);
 
   const toggleSidebar = useCallback(() => {
     void togglePanel(activePanel ?? lastOpenedPanel);
@@ -481,14 +472,13 @@ function App() {
           ? monitor.workArea.position.x / scaleFactor
           : 0;
 
-        const deltaW = panelOpened ? 336 + PANE_GAP : -(336 + PANE_GAP);
-        const minW = 680;
+        const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
+        const minW = getWindowMinWidth(editorVisible, !!activePanel);
         const maxW = workAreaW - 24;
         const nextW = Math.min(Math.max(currentW + deltaW, minW), maxW);
-
-        if (Math.abs(nextW - currentW) < 8) return;
-
-        await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(currentH)));
+        if (Math.abs(nextW - currentW) >= 8) {
+          await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(currentH)));
+        }
 
         const maxX = workAreaX + workAreaW - nextW - 12;
         if (currentX > maxX) {
@@ -498,7 +488,7 @@ function App() {
         }
       })
       .catch(() => undefined);
-  }, [activePanel, tauriRuntime]);
+  }, [activePanel, editorVisible, tauriRuntime]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -920,7 +910,14 @@ function PanelWindow({
     }`;
 
   return (
-    <aside className="relative flex h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95">
+    <aside
+      className="relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95"
+      style={{
+        width: RIGHT_SIDEBAR_WIDTH,
+        minWidth: RIGHT_SIDEBAR_WIDTH,
+        maxWidth: RIGHT_SIDEBAR_WIDTH,
+      }}
+    >
       <div
         className="h-2 w-full shrink-0 cursor-grab"
         data-tauri-drag-region
@@ -1088,24 +1085,41 @@ function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean;
       event.preventDefault();
       event.stopPropagation();
 
-      const { getCurrentWindow, LogicalSize, LogicalPosition } = await import("@tauri-apps/api/window");
+      const { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } = await import("@tauri-apps/api/window");
       const appWindow = getCurrentWindow();
 
       const movesX = edge.includes("West");
       const movesY = edge.includes("North");
 
-      const [size, scaleFactor, pos] = await Promise.all([
+      const [size, scaleFactor, pos, monitor] = await Promise.all([
         appWindow.innerSize(),
         appWindow.scaleFactor(),
-        movesX || movesY ? appWindow.outerPosition() : Promise.resolve(null),
+        appWindow.outerPosition(),
+        currentMonitor(),
       ]);
 
       const startW  = size.width / scaleFactor;
       const startH  = size.height / scaleFactor;
-      const startWX = pos ? pos.x / scaleFactor : 0;
-      const startWY = pos ? pos.y / scaleFactor : 0;
+      const startWX = pos.x / scaleFactor;
+      const startWY = pos.y / scaleFactor;
       const startX  = event.screenX;
       const startY  = event.screenY;
+      const workAreaW = monitor?.workArea?.size?.width
+        ? monitor.workArea.size.width / scaleFactor
+        : window.screen.availWidth;
+      const workAreaH = monitor?.workArea?.size?.height
+        ? monitor.workArea.size.height / scaleFactor
+        : window.screen.availHeight;
+      const workAreaX = monitor?.workArea?.position?.x
+        ? monitor.workArea.position.x / scaleFactor
+        : 0;
+      const workAreaY = monitor?.workArea?.position?.y
+        ? monitor.workArea.position.y / scaleFactor
+        : 0;
+      const maxWidthFromLeft = Math.max(minWidth, workAreaX + workAreaW - startWX - 12);
+      const maxWidthFromRight = Math.max(minWidth, startWX + startW - workAreaX - 12);
+      const maxHeightFromTop = Math.max(540, workAreaY + workAreaH - startWY - 12);
+      const maxHeightFromBottom = Math.max(540, startWY + startH - workAreaY - 12);
 
       let frame: number | null = null;
       let nextW = startW;
@@ -1117,10 +1131,16 @@ function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean;
         const dx = e.screenX - startX;
         const dy = e.screenY - startY;
 
-        if (edge.includes("East"))  nextW = Math.max(minWidth, startW + dx);
-        if (edge.includes("West"))  { nextW = Math.max(minWidth, startW - dx); nextX = startWX + dx; }
-        if (edge.includes("South")) nextH = Math.max(540, startH + dy);
-        if (edge.includes("North")) { nextH = Math.max(540, startH - dy); nextY = startWY + dy; }
+        if (edge.includes("East")) nextW = clampNumber(startW + dx, minWidth, maxWidthFromLeft);
+        if (edge.includes("West")) {
+          nextW = clampNumber(startW - dx, minWidth, maxWidthFromRight);
+          nextX = startWX + startW - nextW;
+        }
+        if (edge.includes("South")) nextH = clampNumber(startH + dy, 540, maxHeightFromTop);
+        if (edge.includes("North")) {
+          nextH = clampNumber(startH - dy, 540, maxHeightFromBottom);
+          nextY = startWY + startH - nextH;
+        }
 
         if (!frame) {
           frame = requestAnimationFrame(() => {
