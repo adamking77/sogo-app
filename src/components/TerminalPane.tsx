@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
@@ -29,6 +29,11 @@ interface TerminalPaneProps {
   onSessionId: (tabId: string, claudeSessionId: string) => void;
 }
 
+interface TerminalDimensions {
+  cols: number;
+  rows: number;
+}
+
 export function TerminalPane({
   tab,
   active,
@@ -45,6 +50,9 @@ export function TerminalPane({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
   const sessionPollRef = useRef<number | undefined>();
+  const fitFrameRef = useRef<number | null>(null);
+  const fitPausedRef = useRef(false);
+  const lastDimensionsRef = useRef<TerminalDimensions | null>(null);
   const decoderRef = useRef(new TextDecoder());
   const timingRef = useRef<{
     spawnStart?: number;
@@ -58,6 +66,42 @@ export function TerminalPane({
   useEffect(() => {
     callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId };
   }, [onData, onError, onExit, onSessionId, onStarted]);
+
+  const fitNow = useCallback(() => {
+    fitTerminal(tab.id, fitAddonRef.current, lastDimensionsRef);
+  }, [tab.id]);
+
+  const scheduleFit = useCallback(() => {
+    if (fitPausedRef.current) return;
+    if (fitFrameRef.current !== null) return;
+
+    fitFrameRef.current = window.requestAnimationFrame(() => {
+      fitFrameRef.current = null;
+      if (fitPausedRef.current) return;
+      fitNow();
+    });
+  }, [fitNow]);
+
+  useEffect(() => {
+    const pauseFit = () => {
+      fitPausedRef.current = true;
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
+    };
+    const resumeFit = () => {
+      fitPausedRef.current = false;
+      scheduleFit();
+    };
+
+    window.addEventListener("sogo:window-resize-start", pauseFit);
+    window.addEventListener("sogo:window-resize-end", resumeFit);
+    return () => {
+      window.removeEventListener("sogo:window-resize-start", pauseFit);
+      window.removeEventListener("sogo:window-resize-end", resumeFit);
+    };
+  }, [scheduleFit]);
 
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) return;
@@ -90,12 +134,17 @@ export function TerminalPane({
     fitAddonRef.current = fitAddon;
 
     return () => {
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
       terminal.dispose();
       if (sessionPollRef.current) {
         window.clearInterval(sessionPollRef.current);
       }
       terminalRef.current = null;
       fitAddonRef.current = null;
+      lastDimensionsRef.current = null;
     };
   }, [tab.id]);
 
@@ -158,10 +207,10 @@ export function TerminalPane({
     terminal.options.fontSize = fontSize;
     terminal.options.theme = palette.terminal;
     if (active) {
-      fitTerminal(tab.id, fitAddonRef.current);
+      scheduleFit();
       terminal.focus();
     }
-  }, [active, fontSize, palette.terminal, tab.id]);
+  }, [active, fontSize, palette.terminal, scheduleFit]);
 
   useEffect(() => {
     if (tab.status === "stopped" || tab.status === "error") {
@@ -173,14 +222,14 @@ export function TerminalPane({
     if (!active || !containerRef.current) return;
 
     const resizeObserver = new ResizeObserver(() => {
-      fitTerminal(tab.id, fitAddonRef.current);
+      scheduleFit();
     });
 
     resizeObserver.observe(containerRef.current);
-    fitTerminal(tab.id, fitAddonRef.current);
+    scheduleFit();
 
     return () => resizeObserver.disconnect();
-  }, [active, tab.id]);
+  }, [active, scheduleFit]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -307,18 +356,35 @@ function decodeBase64(data: string): Uint8Array {
   return bytes;
 }
 
-function fitTerminal(sessionId: string, fitAddon: FitAddon | null) {
+function fitTerminal(
+  sessionId: string,
+  fitAddon: FitAddon | null,
+  lastDimensionsRef: { current: TerminalDimensions | null },
+) {
   if (!fitAddon) return;
 
   try {
     fitAddon.fit();
     const dimensions = fitAddon.proposeDimensions();
     if (dimensions && isTauriRuntime()) {
+      const nextDimensions = {
+        cols: dimensions.cols,
+        rows: dimensions.rows,
+      };
+      const lastDimensions = lastDimensionsRef.current;
+      if (
+        lastDimensions?.cols === nextDimensions.cols
+        && lastDimensions.rows === nextDimensions.rows
+      ) {
+        return;
+      }
+
+      lastDimensionsRef.current = nextDimensions;
       void import("@tauri-apps/api/core").then(({ invoke }) => {
         void invoke("resize_session", {
           sessionId,
-          cols: dimensions.cols,
-          rows: dimensions.rows,
+          cols: nextDimensions.cols,
+          rows: nextDimensions.rows,
         }).catch(() => undefined);
       });
     }

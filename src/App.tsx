@@ -25,6 +25,10 @@ import type { SogoTab } from "@/types";
 
 type ResizeEdge = "North" | "NorthEast" | "East" | "SouthEast" | "South" | "SouthWest" | "West" | "NorthWest";
 
+const TERMINAL_ONLY_WINDOW_MIN_WIDTH = 440;
+const PANEL_WINDOW_MIN_WIDTH = 760;
+const EDITOR_WINDOW_MIN_WIDTH = 840;
+const EDITOR_PANEL_WINDOW_MIN_WIDTH = 1120;
 const TERMINAL_MIN_WIDTH_SOLO = 420;
 const TERMINAL_MIN_WIDTH_WITH_EDITOR = 300;
 const FILE_EDITOR_MIN_WIDTH = 520;
@@ -37,6 +41,13 @@ const FONT_SIZE = {
   medium: 14,
   large: 16,
 } as const;
+
+function getWindowMinWidth(editorVisible: boolean, panelOpen: boolean) {
+  if (editorVisible && panelOpen) return EDITOR_PANEL_WINDOW_MIN_WIDTH;
+  if (editorVisible) return EDITOR_WINDOW_MIN_WIDTH;
+  if (panelOpen) return PANEL_WINDOW_MIN_WIDTH;
+  return TERMINAL_ONLY_WINDOW_MIN_WIDTH;
+}
 
 function readStoredNumber(key: string, fallback: number) {
   const value = Number(localStorage.getItem(key));
@@ -527,11 +538,10 @@ function App() {
 
   const dragHandler = useDragHandler(tauriRuntime);
   const terminalMinWidth = editorVisible ? TERMINAL_MIN_WIDTH_WITH_EDITOR : TERMINAL_MIN_WIDTH_SOLO;
+  const windowMinWidth = getWindowMinWidth(editorVisible, !!activePanel);
   const mainShellMinWidth = editorVisible
-    ? TERMINAL_MIN_WIDTH_WITH_EDITOR
-    : activePanel
-      ? TERMINAL_MIN_WIDTH_SOLO
-      : 680;
+    ? TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + PANE_GAP
+    : TERMINAL_ONLY_WINDOW_MIN_WIDTH;
 
   return (
     <div className="flex h-full w-full gap-2 bg-transparent text-cc-foreground">
@@ -655,14 +665,14 @@ function App() {
             </div>
           ) : null}
         </main>
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="North" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthEast" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="East" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthEast" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="South" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthWest" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="West" />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthWest" />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="North" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthEast" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="East" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthEast" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="South" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthWest" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="West" minWidth={windowMinWidth} />
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthWest" minWidth={windowMinWidth} />
       </div>
 
       {activePanel ? (
@@ -1071,7 +1081,7 @@ const CURSOR: Record<ResizeEdge, string> = {
   NorthWest: "cursor-nw-resize",
 };
 
-function ResizeHandle({ tauriRuntime, edge }: { tauriRuntime: boolean; edge: ResizeEdge }) {
+function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean; edge: ResizeEdge; minWidth: number }) {
   const handleMouseDown = useCallback(
     async (event: React.MouseEvent) => {
       if (!tauriRuntime) return;
@@ -1107,8 +1117,8 @@ function ResizeHandle({ tauriRuntime, edge }: { tauriRuntime: boolean; edge: Res
         const dx = e.screenX - startX;
         const dy = e.screenY - startY;
 
-        if (edge.includes("East"))  nextW = Math.max(840, startW + dx);
-        if (edge.includes("West"))  { nextW = Math.max(840, startW - dx); nextX = startWX + dx; }
+        if (edge.includes("East"))  nextW = Math.max(minWidth, startW + dx);
+        if (edge.includes("West"))  { nextW = Math.max(minWidth, startW - dx); nextX = startWX + dx; }
         if (edge.includes("South")) nextH = Math.max(540, startH + dy);
         if (edge.includes("North")) { nextH = Math.max(540, startH - dy); nextY = startWY + dy; }
 
@@ -1130,12 +1140,14 @@ function ResizeHandle({ tauriRuntime, edge }: { tauriRuntime: boolean; edge: Res
         if (frame) cancelAnimationFrame(frame);
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+        window.dispatchEvent(new Event("sogo:window-resize-end"));
       };
 
+      window.dispatchEvent(new Event("sogo:window-resize-start"));
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [tauriRuntime, edge],
+    [tauriRuntime, edge, minWidth],
   );
 
   const cursor = CURSOR[edge];

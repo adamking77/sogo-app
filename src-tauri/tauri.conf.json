@@ -17,7 +17,7 @@
         "title": "Sogo Desktop",
         "width": 920,
         "height": 700,
-        "minWidth": 840,
+        "minWidth": 440,
         "minHeight": 540,
         "resizable": false,
         "decorations": false,
