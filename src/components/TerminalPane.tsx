@@ -133,7 +133,10 @@ export function TerminalPane({
 
     // Shift+Enter should add a newline inside Claude Code's prompt instead of
     // submitting. ESC+CR is the sequence Option+Enter sends, which Claude Code
-    // already treats as "insert newline".
+    // already treats as "insert newline". preventDefault is required: when the
+    // custom handler returns false, xterm skips its own preventDefault, so the
+    // browser would otherwise insert a newline into the hidden textarea and
+    // xterm would forward that as a stray submit.
     terminal.attachCustomKeyEventHandler((event) => {
       if (
         event.type === "keydown" &&
@@ -143,6 +146,7 @@ export function TerminalPane({
         !event.metaKey &&
         !event.altKey
       ) {
+        event.preventDefault();
         writeToPty("\x1b\r");
         return false;
       }
