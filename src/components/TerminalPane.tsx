@@ -103,8 +103,19 @@ export function TerminalPane({
     };
   }, [scheduleFit]);
 
+  const writeToPty = useCallback(
+    (data: string) => {
+      if (!isTauriRuntime()) return;
+      void import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("write_to_session", { sessionId: tab.id, data }))
+        .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
+    },
+    [tab.id],
+  );
+
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) return;
+    const container = containerRef.current;
 
     const terminal = new Terminal({
       fontFamily: 'var(--cc-font-mono), "SF Mono", Menlo, Monaco, Consolas, monospace',
@@ -118,7 +129,54 @@ export function TerminalPane({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
-    terminal.open(containerRef.current);
+    terminal.open(container);
+
+    // Shift+Enter should add a newline inside Claude Code's prompt instead of
+    // submitting. ESC+CR is the sequence Option+Enter sends, which Claude Code
+    // already treats as "insert newline".
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type === "keydown" &&
+        event.key === "Enter" &&
+        event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        writeToPty("\x1b\r");
+        return false;
+      }
+      return true;
+    });
+
+    // xterm's paste handling forwards text only; intercept image blobs, write
+    // them to a temp file, and feed the path into the PTY.
+    const handlePaste = (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      const imageItem = Array.from(items).find(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      );
+      if (!imageItem) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      void file
+        .arrayBuffer()
+        .then(async (buffer) => {
+          const extension = file.type.split("/")[1] || "png";
+          const { invoke } = await import("@tauri-apps/api/core");
+          const path = await invoke<string>("save_pasted_image", {
+            dataBase64: arrayBufferToBase64(buffer),
+            extension,
+          });
+          writeToPty(`${quotePath(path)} `);
+        })
+        .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
+    };
+    container.addEventListener("paste", handlePaste, true);
+
     terminal.onData((data) => {
       if (!isTauriRuntime()) return;
       const now = performance.now();
@@ -138,6 +196,7 @@ export function TerminalPane({
         window.cancelAnimationFrame(fitFrameRef.current);
         fitFrameRef.current = null;
       }
+      container.removeEventListener("paste", handlePaste, true);
       terminal.dispose();
       if (sessionPollRef.current) {
         window.clearInterval(sessionPollRef.current);
@@ -147,6 +206,33 @@ export function TerminalPane({
       lastDimensionsRef.current = null;
     };
   }, [tab.id]);
+
+  // Files dropped onto the window are written into the active session's PTY as
+  // quoted paths. Claude Code reads file and image paths directly.
+  useEffect(() => {
+    if (!isTauriRuntime() || !active) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
+        if (cancelled) return;
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (cancelled || event.payload.type !== "drop") return;
+          const paths = event.payload.paths;
+          if (!paths || paths.length === 0) return;
+          writeToPty(`${paths.map(quotePath).join(" ")} `);
+          terminalRef.current?.focus();
+        });
+      })
+      .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [active, tab.id, writeToPty]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -345,6 +431,21 @@ function logTiming(tab: SogoTab, event: string, detail: string) {
 function formatDelta(label: string, value?: number) {
   if (typeof value !== "number") return "";
   return `; ${label}=${Math.round(value)}ms`;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return window.btoa(binary);
+}
+
+function quotePath(path: string): string {
+  // Single-quote so spaces survive; escape any embedded single quotes.
+  return `'${path.replace(/'/g, "'\\''")}'`;
 }
 
 function decodeBase64(data: string): Uint8Array {

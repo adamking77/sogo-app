@@ -1,8 +1,13 @@
 mod files;
 mod pty;
 
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::PathBuf,
+    time::SystemTime,
+};
 
+use base64::Engine;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -66,6 +71,33 @@ fn default_session_cwd() -> Result<String, String> {
         .map_err(|error| format!("Failed to create scratch session directory: {error}"))?;
 
     Ok(cwd.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_pasted_image(data_base64: String, extension: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|error| format!("Invalid image data: {error}"))?;
+
+    let ext = extension.trim().trim_start_matches('.');
+    let ext = if ext.is_empty() || ext.len() > 8 {
+        "png"
+    } else {
+        ext
+    };
+
+    let dir = app_support_dir().join("PastedImages");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create image directory: {error}"))?;
+
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let file = dir.join(format!("paste-{stamp}.{ext}"));
+
+    fs::write(&file, &bytes).map_err(|error| format!("Could not write image: {error}"))?;
+    Ok(file.to_string_lossy().to_string())
 }
 
 fn load_dotenv_candidates() {
@@ -208,6 +240,7 @@ pub fn run() {
             pty::session_active,
             pty::latest_claude_session_id,
             default_session_cwd,
+            save_pasted_image,
             read_runtime_config,
             read_claude_inventory,
             files::list_directory,
