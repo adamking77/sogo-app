@@ -22,6 +22,8 @@ import {
   Check,
   Eye,
   Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   RotateCcw,
   Save,
@@ -36,12 +38,22 @@ import { useThemeStore } from "@/stores/themeStore";
 interface FileEditorPaneProps {
   sessionId: string;
   cwd: string;
+  layout: "overlay" | "ejected";
   onDragMouseDown: (event: ReactMouseEvent) => void;
   onBeginResize: (event: ReactMouseEvent) => void;
   onResetWidth: () => void;
+  onToggleLayout: () => void;
 }
 
-export function FileEditorPane({ sessionId, cwd, onDragMouseDown, onBeginResize, onResetWidth }: FileEditorPaneProps) {
+export function FileEditorPane({
+  sessionId,
+  cwd,
+  layout,
+  onDragMouseDown,
+  onBeginResize,
+  onResetWidth,
+  onToggleLayout,
+}: FileEditorPaneProps) {
   const session = useEditorStore((state) => state.sessions[sessionId]);
   const {
     save,
@@ -107,6 +119,13 @@ export function FileEditorPane({ sessionId, cwd, onDragMouseDown, onBeginResize,
           {isMarkdown ? (
             <ModeToggle mode={mode} onModeChange={(nextMode) => setMode(sessionId, nextMode)} />
           ) : null}
+          <IconButton
+            label={layout === "ejected" ? "Return terminal overlay" : "Eject terminal left"}
+            active={layout === "ejected"}
+            onClick={onToggleLayout}
+          >
+            {layout === "ejected" ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+          </IconButton>
           <IconButton
             label="Revert"
             disabled={!dirty || session.saving}

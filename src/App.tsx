@@ -24,10 +24,14 @@ import { applyPalette, palettes, useThemeStore } from "@/stores/themeStore";
 import type { SogoTab } from "@/types";
 
 type ResizeEdge = "North" | "NorthEast" | "East" | "SouthEast" | "South" | "SouthWest" | "West" | "NorthWest";
+type FileEditorLayout = "overlay" | "ejected";
 
 const TERMINAL_ONLY_WINDOW_MIN_WIDTH = 440;
 const TERMINAL_MIN_WIDTH_SOLO = 420;
 const TERMINAL_MIN_WIDTH_WITH_EDITOR = 300;
+const TERMINAL_EJECTED_MIN_WIDTH = 320;
+const TERMINAL_EJECTED_MAX_WIDTH = 980;
+const TERMINAL_EJECTED_DEFAULT_WIDTH = 520;
 const FILE_EDITOR_MIN_WIDTH = 520;
 const FILE_EDITOR_MAX_WIDTH = 1080;
 const FILE_EDITOR_DEFAULT_WIDTH = 760;
@@ -44,7 +48,12 @@ const FONT_SIZE = {
   large: 16,
 } as const;
 
-function getWindowMinWidth(editorVisible: boolean, panelOpen: boolean) {
+function getWindowMinWidth(editorVisible: boolean, panelOpen: boolean, fileEditorLayout: FileEditorLayout) {
+  if (editorVisible && fileEditorLayout === "ejected") {
+    const panelWidth = panelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
+    const gapCount = panelOpen ? 2 : 1;
+    return TERMINAL_EJECTED_MIN_WIDTH + FILE_EDITOR_MIN_WIDTH + panelWidth + PANE_GAP * gapCount;
+  }
   if (editorVisible && panelOpen) return EDITOR_PANEL_WINDOW_MIN_WIDTH;
   if (editorVisible) return EDITOR_WINDOW_MIN_WIDTH;
   if (panelOpen) return PANEL_WINDOW_MIN_WIDTH;
@@ -60,10 +69,32 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function clampFileEditorWidth(width: number, toolPanelOpen: boolean) {
+function getAvailableEjectedPaneWidth(toolPanelOpen: boolean) {
   const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
   const gapCount = toolPanelOpen ? 2 : 1;
-  const maxAvailable = window.innerWidth - TERMINAL_MIN_WIDTH_WITH_EDITOR - toolPanelWidth - PANE_GAP * gapCount;
+  return window.innerWidth - toolPanelWidth - PANE_GAP * gapCount;
+}
+
+// In ejected mode the terminal column has a fixed width and the file-view
+// column is flex-1. Clamp the terminal so the flex file-view keeps at least
+// FILE_EDITOR_MIN_WIDTH.
+function clampEjectedTerminalWidth(width: number, toolPanelOpen: boolean) {
+  const maxAvailable = getAvailableEjectedPaneWidth(toolPanelOpen) - FILE_EDITOR_MIN_WIDTH;
+  const effectiveMin = Math.min(TERMINAL_EJECTED_MIN_WIDTH, Math.max(220, maxAvailable));
+  const effectiveMax = Math.max(effectiveMin, Math.min(TERMINAL_EJECTED_MAX_WIDTH, maxAvailable));
+  return Math.round(clampNumber(width, effectiveMin, effectiveMax));
+}
+
+function clampFileEditorWidth(
+  width: number,
+  toolPanelOpen: boolean,
+  fileEditorLayout: FileEditorLayout,
+  terminalWidth = TERMINAL_MIN_WIDTH_WITH_EDITOR,
+) {
+  const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
+  const gapCount = toolPanelOpen ? 2 : 1;
+  const requiredTerminalWidth = fileEditorLayout === "ejected" ? terminalWidth : TERMINAL_MIN_WIDTH_WITH_EDITOR;
+  const maxAvailable = window.innerWidth - requiredTerminalWidth - toolPanelWidth - PANE_GAP * gapCount;
   const effectiveMin = Math.min(FILE_EDITOR_MIN_WIDTH, Math.max(220, maxAvailable));
   const effectiveMax = Math.max(effectiveMin, Math.min(FILE_EDITOR_MAX_WIDTH, maxAvailable));
   return Math.round(Math.min(Math.max(width, effectiveMin), effectiveMax));
@@ -115,6 +146,10 @@ function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(() => localStorage.getItem("sogo.windowPinned") === "true");
   const [fileEditorWidth, setFileEditorWidth] = useState(() => readStoredNumber("sogo.fileEditorWidth", FILE_EDITOR_DEFAULT_WIDTH));
+  const [terminalPaneWidth, setTerminalPaneWidth] = useState(() => readStoredNumber("sogo.terminalPaneWidth", TERMINAL_EJECTED_DEFAULT_WIDTH));
+  const [fileEditorLayout, setFileEditorLayout] = useState<FileEditorLayout>(() => (
+    localStorage.getItem("sogo.fileEditorLayout") === "ejected" ? "ejected" : "overlay"
+  ));
   const { paletteName, fontSize } = useThemeStore();
   const editorSessions = useEditorStore((state) => state.sessions);
   const openFile = useEditorStore((state) => state.openFile);
@@ -179,8 +214,12 @@ function App() {
   );
   const activeEditor = activeTab ? editorSessions[activeTab.id] : undefined;
   const editorVisible = !!activeEditor?.activePath && activeEditor.windowVisible;
+  const ejectedEditorActive = editorVisible && fileEditorLayout === "ejected";
+  const renderedTerminalPaneWidth = ejectedEditorActive
+    ? clampEjectedTerminalWidth(terminalPaneWidth, !!activePanel)
+    : terminalPaneWidth;
   const renderedFileEditorWidth = editorVisible
-    ? clampFileEditorWidth(fileEditorWidth, !!activePanel)
+    ? clampFileEditorWidth(fileEditorWidth, !!activePanel, fileEditorLayout, renderedTerminalPaneWidth)
     : fileEditorWidth;
 
   useEffect(() => {
@@ -188,14 +227,23 @@ function App() {
   }, [fileEditorWidth]);
 
   useEffect(() => {
+    localStorage.setItem("sogo.terminalPaneWidth", String(terminalPaneWidth));
+  }, [terminalPaneWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("sogo.fileEditorLayout", fileEditorLayout);
+  }, [fileEditorLayout]);
+
+  useEffect(() => {
     const fitWidths = () => {
-      setFileEditorWidth((current) => clampFileEditorWidth(current, !!activePanel));
+      setTerminalPaneWidth((current) => clampEjectedTerminalWidth(current, !!activePanel));
+      setFileEditorWidth((current) => clampFileEditorWidth(current, !!activePanel, fileEditorLayout));
     };
 
     fitWidths();
     window.addEventListener("resize", fitWidths);
     return () => window.removeEventListener("resize", fitWidths);
-  }, [activePanel, editorVisible]);
+  }, [activePanel, editorVisible, fileEditorLayout, fileEditorWidth, terminalPaneWidth]);
 
   const newTab = useCallback(async () => {
     setLastError(null);
@@ -439,9 +487,30 @@ function App() {
 
   const beginFileEditorResize = useCallback((event: ReactMouseEvent) => {
     beginHorizontalPaneResize(event, renderedFileEditorWidth, (nextWidth) => {
-      setFileEditorWidth(clampFileEditorWidth(nextWidth, !!activePanel));
+      setFileEditorWidth(clampFileEditorWidth(nextWidth, !!activePanel, fileEditorLayout, renderedTerminalPaneWidth));
     }, { invert: true });
-  }, [activePanel, renderedFileEditorWidth]);
+  }, [activePanel, fileEditorLayout, renderedFileEditorWidth, renderedTerminalPaneWidth]);
+
+  // Ejected mode: terminal column is fixed-width, file-view column is flex-1.
+  // Every column edge resizes terminalPaneWidth; the flex file-view absorbs the
+  // inverse. Divider edges (terminal-right ≡ file-view-left) drag normally;
+  // outer edges (terminal-left, file-view-right) are inverted so dragging
+  // outward grows the column under the cursor.
+  const beginTerminalDividerResize = useCallback((event: ReactMouseEvent) => {
+    beginHorizontalPaneResize(event, renderedTerminalPaneWidth, (nextWidth) => {
+      setTerminalPaneWidth(clampEjectedTerminalWidth(nextWidth, !!activePanel));
+    });
+  }, [activePanel, renderedTerminalPaneWidth]);
+
+  const beginTerminalEdgeResize = useCallback((event: ReactMouseEvent) => {
+    beginHorizontalPaneResize(event, renderedTerminalPaneWidth, (nextWidth) => {
+      setTerminalPaneWidth(clampEjectedTerminalWidth(nextWidth, !!activePanel));
+    }, { invert: true });
+  }, [activePanel, renderedTerminalPaneWidth]);
+
+  const toggleFileEditorLayout = useCallback(() => {
+    setFileEditorLayout((current) => (current === "ejected" ? "overlay" : "ejected"));
+  }, []);
 
   useEffect(() => {
     if (!tauriRuntime) return;
@@ -473,7 +542,7 @@ function App() {
           : 0;
 
         const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
-        const minW = getWindowMinWidth(editorVisible, !!activePanel);
+        const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
         const maxW = workAreaW - 24;
         const nextW = Math.min(Math.max(currentW + deltaW, minW), maxW);
         if (Math.abs(nextW - currentW) >= 8) {
@@ -488,7 +557,7 @@ function App() {
         }
       })
       .catch(() => undefined);
-  }, [activePanel, editorVisible, tauriRuntime]);
+  }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -528,16 +597,24 @@ function App() {
 
   const dragHandler = useDragHandler(tauriRuntime);
   const terminalMinWidth = editorVisible ? TERMINAL_MIN_WIDTH_WITH_EDITOR : TERMINAL_MIN_WIDTH_SOLO;
-  const windowMinWidth = getWindowMinWidth(editorVisible, !!activePanel);
-  const mainShellMinWidth = editorVisible
+  const windowMinWidth = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
+  const mainShellMinWidth = ejectedEditorActive
+    ? TERMINAL_EJECTED_MIN_WIDTH
+    : editorVisible
     ? TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + PANE_GAP
     : TERMINAL_ONLY_WINDOW_MIN_WIDTH;
 
   return (
-    <div className="flex h-full w-full gap-2 bg-transparent text-cc-foreground">
+    <div className="relative flex h-full w-full gap-2 bg-transparent text-cc-foreground">
       <div
-        className="relative flex h-full min-h-[540px] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95"
-        style={{ minWidth: mainShellMinWidth }}
+        className={`relative flex h-full min-h-[540px] min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95 ${
+          ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
+        }`}
+        style={{
+          minWidth: mainShellMinWidth,
+          width: ejectedEditorActive ? renderedTerminalPaneWidth : undefined,
+          flex: ejectedEditorActive ? "0 0 auto" : undefined,
+        }}
       >
         {/* Childless drag strip — transparent, cursor-only; data-tauri-drag-region fires reliably here because no interactive child intercepts mousedown */}
         <div
@@ -595,7 +672,7 @@ function App() {
         <main className="flex min-h-0 flex-1 overflow-hidden">
           <section
             className="flex min-w-0 flex-1 flex-col"
-            style={{ minWidth: editorVisible ? terminalMinWidth : 0 }}
+            style={{ minWidth: editorVisible && !ejectedEditorActive ? terminalMinWidth : 0 }}
           >
             {activeTab ? (
               <SessionBar
@@ -638,7 +715,7 @@ function App() {
               onNewFolderSession={newFolderTab}
             />
           </section>
-          {activeTab && editorVisible ? (
+          {activeTab && editorVisible && !ejectedEditorActive ? (
             <div
               className="relative z-10 min-h-0 shrink-0 pr-2"
               style={{ width: renderedFileEditorWidth, marginLeft: -10 }}
@@ -648,22 +725,65 @@ function App() {
               <FileEditorPane
                 sessionId={activeTab.id}
                 cwd={activeTab.cwd}
+                layout={fileEditorLayout}
                 onDragMouseDown={dragHandler}
                 onBeginResize={beginFileEditorResize}
                 onResetWidth={() => setFileEditorWidth(FILE_EDITOR_DEFAULT_WIDTH)}
+                onToggleLayout={toggleFileEditorLayout}
               />
             </div>
           ) : null}
         </main>
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="North" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthEast" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="East" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthEast" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="South" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthWest" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="West" minWidth={windowMinWidth} />
-        <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthWest" minWidth={windowMinWidth} />
+        {ejectedEditorActive ? (
+          <>
+            {/* Terminal column — left (outer) edge and right (divider) edge. */}
+            <div
+              className="absolute inset-y-4 left-0 z-40 w-3 cursor-col-resize"
+              onMouseDown={beginTerminalEdgeResize}
+              onDoubleClick={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
+              title="Resize terminal column"
+              aria-label="Resize terminal column"
+            />
+            <div
+              className="absolute inset-y-4 right-0 z-40 w-3 cursor-col-resize"
+              onMouseDown={beginTerminalDividerResize}
+              onDoubleClick={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
+              title="Resize terminal column"
+              aria-label="Resize terminal column"
+            />
+          </>
+        ) : null}
       </div>
+
+      {activeTab && editorVisible && ejectedEditorActive ? (
+        <div
+          className="relative z-10 h-full min-h-0 min-w-0 flex-1"
+          style={{ minWidth: FILE_EDITOR_MIN_WIDTH }}
+          data-tauri-drag-region
+          onMouseDown={dragHandler}
+        >
+          <FileEditorPane
+            sessionId={activeTab.id}
+            cwd={activeTab.cwd}
+            layout={fileEditorLayout}
+            onDragMouseDown={dragHandler}
+            onBeginResize={beginTerminalDividerResize}
+            onResetWidth={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
+            onToggleLayout={toggleFileEditorLayout}
+          />
+          {/* File-view column — right (outer) edge; left edge handle is inside FileEditorPane. */}
+          <div
+            className="absolute inset-y-4 right-0 z-40 w-3 cursor-col-resize"
+            onMouseDown={(event) => {
+              event.stopPropagation();
+              beginTerminalEdgeResize(event);
+            }}
+            onDoubleClick={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
+            title="Resize file view"
+            aria-label="Resize file view"
+          />
+        </div>
+      ) : null}
 
       {activePanel ? (
         <PanelWindow
@@ -682,6 +802,23 @@ function App() {
           onOpenVaultDocument={openVaultDocument}
         />
       ) : null}
+
+      {/* Window-resize handles on the outer shell so they track the real window
+          frame. In ejected mode the long left/right edges belong to the column
+          handles, so West/East are dropped there — window width still resizes
+          from the corners. */}
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="North" minWidth={windowMinWidth} />
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthEast" minWidth={windowMinWidth} />
+      {!ejectedEditorActive ? (
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="East" minWidth={windowMinWidth} />
+      ) : null}
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthEast" minWidth={windowMinWidth} />
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="South" minWidth={windowMinWidth} />
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="SouthWest" minWidth={windowMinWidth} />
+      {!ejectedEditorActive ? (
+        <ResizeHandle tauriRuntime={tauriRuntime} edge="West" minWidth={windowMinWidth} />
+      ) : null}
+      <ResizeHandle tauriRuntime={tauriRuntime} edge="NorthWest" minWidth={windowMinWidth} />
     </div>
   );
 }
