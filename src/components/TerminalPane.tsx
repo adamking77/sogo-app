@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 
 import { isTauriRuntime } from "@/lib/runtime";
 import type { Palette } from "@/stores/themeStore";
@@ -34,6 +34,25 @@ interface TerminalDimensions {
   rows: number;
 }
 
+type SmartLinkKind = "network" | "path";
+
+interface SmartLinkMatch {
+  text: string;
+  index: number;
+  kind: SmartLinkKind;
+}
+
+const SMART_LINK_PATTERNS: Array<{ kind: SmartLinkKind; regex: RegExp }> = [
+  {
+    kind: "network",
+    regex: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}|localhost)(?::\d{2,5})?\b/g,
+  },
+  {
+    kind: "path",
+    regex: /(?:~|\.{1,2}|\/)[^\s"'`<>|]+/g,
+  },
+];
+
 export function TerminalPane({
   tab,
   active,
@@ -54,6 +73,8 @@ export function TerminalPane({
   const fitPausedRef = useRef(false);
   const lastDimensionsRef = useRef<TerminalDimensions | null>(null);
   const decoderRef = useRef(new TextDecoder());
+  const copiedNoticeTimerRef = useRef<number | undefined>();
+  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const timingRef = useRef<{
     spawnStart?: number;
     spawnResolved?: number;
@@ -66,6 +87,25 @@ export function TerminalPane({
   useEffect(() => {
     callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId };
   }, [onData, onError, onExit, onSessionId, onStarted]);
+
+  useEffect(() => () => {
+    window.clearTimeout(copiedNoticeTimerRef.current);
+  }, []);
+
+  const showCopiedNotice = useCallback((text: string) => {
+    window.clearTimeout(copiedNoticeTimerRef.current);
+    setCopiedNotice(`Copied ${text}`);
+    copiedNoticeTimerRef.current = window.setTimeout(() => setCopiedNotice(null), 1400);
+  }, []);
+
+  const copySmartText = useCallback(
+    (text: string) => {
+      void copyTextToClipboard(text)
+        .then(() => showCopiedNotice(text))
+        .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
+    },
+    [showCopiedNotice, tab.id],
+  );
 
   const fitNow = useCallback(() => {
     fitTerminal(tab.id, fitAddonRef.current, lastDimensionsRef);
@@ -128,7 +168,16 @@ export function TerminalPane({
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon());
+    terminal.loadAddon(new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        copySmartText(uri);
+        return;
+      }
+      openExternalUrl(uri);
+    }));
+    const smartLinkProvider = terminal.registerLinkProvider(createSmartLinkProvider(terminal, copySmartText));
     terminal.open(container);
 
     // Shift+Enter should add a newline inside Claude Code's prompt instead of
@@ -201,6 +250,7 @@ export function TerminalPane({
         fitFrameRef.current = null;
       }
       container.removeEventListener("paste", handlePaste, true);
+      smartLinkProvider.dispose();
       terminal.dispose();
       if (sessionPollRef.current) {
         window.clearInterval(sessionPollRef.current);
@@ -410,6 +460,11 @@ export function TerminalPane({
         <span>Claude Code PTY</span>
       </div>
       <div ref={containerRef} className="h-[calc(100%-1.75rem)] min-h-0 min-w-0" />
+      {copiedNotice ? (
+        <div className="pointer-events-none absolute right-3 top-10 z-30 max-w-[70%] truncate rounded-md border border-cc-border bg-cc-surface px-2.5 py-1 text-[11px] text-cc-foreground shadow-lg">
+          {copiedNotice}
+        </div>
+      ) : null}
       {(tab.status === "stopped" || tab.status === "error") && !tab.started ? (
         <div className="absolute inset-0 flex items-center justify-center bg-cc-background/90">
           <div className="max-w-sm text-center">
@@ -445,6 +500,109 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return window.btoa(binary);
+}
+
+function createSmartLinkProvider(terminal: Terminal, onCopy: (text: string) => void): ILinkProvider {
+  return {
+    provideLinks(bufferLineNumber, callback) {
+      const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
+      if (!line) {
+        callback(undefined);
+        return;
+      }
+
+      const text = line.translateToString(true);
+      const matches = findSmartLinkMatches(text);
+      if (matches.length === 0) {
+        callback(undefined);
+        return;
+      }
+
+      callback(matches.map((match): ILink => ({
+        text: match.text,
+        range: {
+          start: { x: match.index + 1, y: bufferLineNumber },
+          end: { x: match.index + match.text.length, y: bufferLineNumber },
+        },
+        decorations: {
+          pointerCursor: true,
+          underline: true,
+        },
+        activate(event) {
+          event.preventDefault();
+          event.stopPropagation();
+          onCopy(match.text);
+        },
+      })));
+    },
+  };
+}
+
+function findSmartLinkMatches(line: string): SmartLinkMatch[] {
+  const matches: SmartLinkMatch[] = [];
+
+  for (const { kind, regex } of SMART_LINK_PATTERNS) {
+    regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(line)) !== null) {
+      const normalized = trimSmartLink(match[0]);
+      if (!normalized) continue;
+      matches.push({
+        kind,
+        text: normalized,
+        index: match.index,
+      });
+    }
+  }
+
+  return matches
+    .filter((match, index, all) => (
+      all.findIndex((candidate) => rangesOverlap(match, candidate)) === index
+    ))
+    .sort((a, b) => a.index - b.index);
+}
+
+function trimSmartLink(text: string) {
+  return text.replace(/[),.;:!?]+$/g, "");
+}
+
+function rangesOverlap(left: SmartLinkMatch, right: SmartLinkMatch) {
+  if (left === right) return true;
+  const leftEnd = left.index + left.text.length;
+  const rightEnd = right.index + right.text.length;
+  return left.index < rightEnd && right.index < leftEnd;
+}
+
+function openExternalUrl(uri: string) {
+  const newWindow = window.open();
+  if (newWindow) {
+    try {
+      newWindow.opener = null;
+    } catch {
+      // no-op
+    }
+    newWindow.location.href = uri;
+  }
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("Clipboard write failed");
+  }
 }
 
 function quotePath(path: string): string {
