@@ -37,7 +37,7 @@ const FILE_EDITOR_MAX_WIDTH = 1080;
 const FILE_EDITOR_DEFAULT_WIDTH = 760;
 const PANE_GAP = 8;
 const RIGHT_SIDEBAR_WIDTH = 336;
-const PANEL_WINDOW_MIN_WIDTH = TERMINAL_MIN_WIDTH_SOLO + RIGHT_SIDEBAR_WIDTH + PANE_GAP;
+const PANEL_WINDOW_MIN_WIDTH = TERMINAL_ONLY_WINDOW_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP;
 const EDITOR_WINDOW_MIN_WIDTH = 840;
 const EDITOR_PANEL_WINDOW_MIN_WIDTH =
   TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP * 2;
@@ -69,17 +69,21 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getAvailableEjectedPaneWidth(toolPanelOpen: boolean) {
+function getAvailableEjectedPaneWidthForWindow(windowWidth: number, toolPanelOpen: boolean) {
   const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
   const gapCount = toolPanelOpen ? 2 : 1;
-  return window.innerWidth - toolPanelWidth - PANE_GAP * gapCount;
+  return windowWidth - toolPanelWidth - PANE_GAP * gapCount;
 }
 
 // In ejected mode the terminal column has a fixed width and the file-view
 // column is flex-1. Clamp the terminal so the flex file-view keeps at least
 // FILE_EDITOR_MIN_WIDTH.
 function clampEjectedTerminalWidth(width: number, toolPanelOpen: boolean) {
-  const maxAvailable = getAvailableEjectedPaneWidth(toolPanelOpen) - FILE_EDITOR_MIN_WIDTH;
+  return clampEjectedTerminalWidthForWindow(width, toolPanelOpen, window.innerWidth);
+}
+
+function clampEjectedTerminalWidthForWindow(width: number, toolPanelOpen: boolean, windowWidth: number) {
+  const maxAvailable = getAvailableEjectedPaneWidthForWindow(windowWidth, toolPanelOpen) - FILE_EDITOR_MIN_WIDTH;
   const effectiveMin = Math.min(TERMINAL_EJECTED_MIN_WIDTH, Math.max(220, maxAvailable));
   const effectiveMax = Math.max(effectiveMin, Math.min(TERMINAL_EJECTED_MAX_WIDTH, maxAvailable));
   return Math.round(clampNumber(width, effectiveMin, effectiveMax));
@@ -235,15 +239,21 @@ function App() {
   }, [fileEditorLayout]);
 
   useEffect(() => {
+    if (!editorVisible) return;
+
     const fitWidths = () => {
-      setTerminalPaneWidth((current) => clampEjectedTerminalWidth(current, !!activePanel));
+      if (fileEditorLayout === "ejected") {
+        setTerminalPaneWidth((current) => clampEjectedTerminalWidth(current, !!activePanel));
+        return;
+      }
+
       setFileEditorWidth((current) => clampFileEditorWidth(current, !!activePanel, fileEditorLayout));
     };
 
     fitWidths();
     window.addEventListener("resize", fitWidths);
     return () => window.removeEventListener("resize", fitWidths);
-  }, [activePanel, editorVisible, fileEditorLayout, fileEditorWidth, terminalPaneWidth]);
+  }, [activePanel, editorVisible, fileEditorLayout]);
 
   const newTab = useCallback(async () => {
     setLastError(null);
@@ -502,12 +512,6 @@ function App() {
     });
   }, [activePanel, renderedTerminalPaneWidth]);
 
-  const beginTerminalEdgeResize = useCallback((event: ReactMouseEvent) => {
-    beginHorizontalPaneResize(event, renderedTerminalPaneWidth, (nextWidth) => {
-      setTerminalPaneWidth(clampEjectedTerminalWidth(nextWidth, !!activePanel));
-    }, { invert: true });
-  }, [activePanel, renderedTerminalPaneWidth]);
-
   const toggleFileEditorLayout = useCallback(() => {
     setFileEditorLayout((current) => (current === "ejected" ? "overlay" : "ejected"));
   }, []);
@@ -598,6 +602,14 @@ function App() {
   const dragHandler = useDragHandler(tauriRuntime);
   const terminalMinWidth = editorVisible ? TERMINAL_MIN_WIDTH_WITH_EDITOR : TERMINAL_MIN_WIDTH_SOLO;
   const windowMinWidth = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
+  const beginEjectedWestWindowResize = useEjectedTerminalWestResizeHandler(
+    tauriRuntime,
+    windowMinWidth,
+    renderedTerminalPaneWidth,
+    !!activePanel,
+    setTerminalPaneWidth,
+  );
+  const beginEjectedEastWindowResize = useWindowResizeHandler(tauriRuntime, "East", windowMinWidth);
   const mainShellMinWidth = ejectedEditorActive
     ? TERMINAL_EJECTED_MIN_WIDTH
     : editorVisible
@@ -738,11 +750,10 @@ function App() {
           <>
             {/* Terminal column — left (outer) edge and right (divider) edge. */}
             <div
-              className="absolute inset-y-4 left-0 z-40 w-3 cursor-col-resize"
-              onMouseDown={beginTerminalEdgeResize}
-              onDoubleClick={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
-              title="Resize terminal column"
-              aria-label="Resize terminal column"
+              className="absolute inset-y-4 left-0 z-40 w-3 cursor-w-resize"
+              onMouseDown={beginEjectedWestWindowResize}
+              title="Resize window"
+              aria-label="Resize window"
             />
             <div
               className="absolute inset-y-4 right-0 z-40 w-3 cursor-col-resize"
@@ -773,14 +784,10 @@ function App() {
           />
           {/* File-view column — right (outer) edge; left edge handle is inside FileEditorPane. */}
           <div
-            className="absolute inset-y-4 right-0 z-40 w-3 cursor-col-resize"
-            onMouseDown={(event) => {
-              event.stopPropagation();
-              beginTerminalEdgeResize(event);
-            }}
-            onDoubleClick={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
-            title="Resize file view"
-            aria-label="Resize file view"
+            className="absolute inset-y-4 right-0 z-40 w-3 cursor-e-resize"
+            onMouseDown={beginEjectedEastWindowResize}
+            title="Resize window"
+            aria-label="Resize window"
           />
         </div>
       ) : null}
@@ -1215,8 +1222,8 @@ const CURSOR: Record<ResizeEdge, string> = {
   NorthWest: "cursor-nw-resize",
 };
 
-function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean; edge: ResizeEdge; minWidth: number }) {
-  const handleMouseDown = useCallback(
+function useWindowResizeHandler(tauriRuntime: boolean, edge: ResizeEdge, minWidth: number) {
+  return useCallback(
     async (event: React.MouseEvent) => {
       if (!tauriRuntime) return;
       event.preventDefault();
@@ -1306,6 +1313,86 @@ function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean;
     },
     [tauriRuntime, edge, minWidth],
   );
+}
+
+function useEjectedTerminalWestResizeHandler(
+  tauriRuntime: boolean,
+  minWidth: number,
+  terminalWidth: number,
+  panelOpen: boolean,
+  setTerminalWidth: (updater: number) => void,
+) {
+  return useCallback(
+    async (event: React.MouseEvent) => {
+      if (!tauriRuntime) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+
+      const [size, scaleFactor, pos, monitor] = await Promise.all([
+        appWindow.innerSize(),
+        appWindow.scaleFactor(),
+        appWindow.outerPosition(),
+        currentMonitor(),
+      ]);
+
+      const startW = size.width / scaleFactor;
+      const startH = size.height / scaleFactor;
+      const startWX = pos.x / scaleFactor;
+      const startWY = pos.y / scaleFactor;
+      const startX = event.screenX;
+      const workAreaW = monitor?.workArea?.size?.width
+        ? monitor.workArea.size.width / scaleFactor
+        : window.screen.availWidth;
+      const workAreaX = monitor?.workArea?.position?.x
+        ? monitor.workArea.position.x / scaleFactor
+        : 0;
+      const maxWidthFromRight = Math.max(minWidth, startWX + startW - workAreaX - 12);
+
+      let frame: number | null = null;
+      let nextW = startW;
+      let nextX = startWX;
+      let nextTerminalWidth = terminalWidth;
+
+      const onMove = (e: MouseEvent) => {
+        const dx = e.screenX - startX;
+        const rawW = clampNumber(startW - dx, minWidth, maxWidthFromRight);
+        const rawTerminalWidth = terminalWidth + rawW - startW;
+        nextTerminalWidth = clampEjectedTerminalWidthForWindow(rawTerminalWidth, panelOpen, rawW);
+        nextW = clampNumber(startW + nextTerminalWidth - terminalWidth, minWidth, maxWidthFromRight);
+        nextX = startWX + startW - nextW;
+
+        if (!frame) {
+          frame = requestAnimationFrame(() => {
+            setTerminalWidth(nextTerminalWidth);
+            void Promise.all([
+              appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(startH))),
+              appWindow.setPosition(new LogicalPosition(Math.round(nextX), Math.round(startWY))),
+            ]);
+            frame = null;
+          });
+        }
+      };
+
+      const onUp = () => {
+        if (frame) cancelAnimationFrame(frame);
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        window.dispatchEvent(new Event("sogo:window-resize-end"));
+      };
+
+      window.dispatchEvent(new Event("sogo:window-resize-start"));
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [tauriRuntime, minWidth, terminalWidth, panelOpen, setTerminalWidth],
+  );
+}
+
+function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean; edge: ResizeEdge; minWidth: number }) {
+  const handleMouseDown = useWindowResizeHandler(tauriRuntime, edge, minWidth);
 
   const cursor = CURSOR[edge];
 
