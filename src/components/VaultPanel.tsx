@@ -139,6 +139,7 @@ async function loadDocuments(
   setError: (error: string | null) => void,
 ) {
   const { data, error } = await client
+    .schema("knowledge")
     .from("documents")
     .select("id,title,source_path,document_type,domain")
     .order("source_path", { ascending: true });
