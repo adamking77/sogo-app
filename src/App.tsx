@@ -234,7 +234,7 @@ function App() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const cwd = await invoke<string>("default_session_cwd");
-      addTab(cwd, { label: `Scratch ${tabs.length + 1}`, folderChosen: false });
+      addTab(cwd, { label: `Session ${tabs.length + 1}`, folderChosen: false });
     } catch (error) {
       toastError(`Could not start a Claude session: ${String(error)}`);
     }
@@ -277,11 +277,16 @@ function App() {
       }
 
       setDiffByTab((current) => ({ ...current, [id]: undefined }));
+      removeTab(id);
       if (tauriRuntime) {
+        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+          const appWindow = getCurrentWindow();
+          void appWindow.show();
+          void appWindow.setFocus();
+        }).catch(() => undefined);
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("close_session", { sessionId: id }).catch(() => undefined);
       }
-      removeTab(id);
     },
     [removeTab, setActiveTabId, tauriRuntime],
   );
@@ -296,22 +301,11 @@ function App() {
       const tab = tabs.find((candidate) => candidate.id === id);
       if (!tab) return;
       const running = tab.started && (tab.status === "busy" || tab.status === "awaiting-input" || tab.status === "idle");
-
-      if (running) {
-        // Second request (e.g. ⌘W twice) confirms.
-        if (confirmingCloseTabId === id) {
-          cancelCloseConfirm();
-          void closeTab(id);
-          return;
-        }
-        setConfirmingCloseTabId(id);
-        window.clearTimeout(closeConfirmTimerRef.current);
-        closeConfirmTimerRef.current = window.setTimeout(() => setConfirmingCloseTabId(null), 3500);
-      } else {
-        void closeTab(id);
-      }
+      console.info(`[sogo lifecycle] tab-close id=${id} label=${tab.label} status=${tab.status} started=${!!tab.started} running=${running}`);
+      cancelCloseConfirm();
+      void closeTab(id);
     },
-    [tabs, confirmingCloseTabId, cancelCloseConfirm, closeTab],
+    [tabs, cancelCloseConfirm, closeTab],
   );
 
   const confirmCloseTab = useCallback(() => {
@@ -351,9 +345,20 @@ function App() {
 
   const resumeAll = useCallback(() => {
     for (const tab of stoppedTabs) {
+      console.info(`[sogo timing] ${tab.label} resume-all-requested`);
       updateTab(tab.id, { started: true, status: "busy" });
     }
   }, [stoppedTabs, updateTab]);
+
+  const resumeTab = useCallback(
+    (tabId: string) => {
+      const tab = useSessionStore.getState().tabs.find((candidate) => candidate.id === tabId);
+      console.info(`[sogo timing] resume-request tab=${tabId} status=${tab?.status ?? "missing"} started=${!!tab?.started}`);
+      updateTab(tabId, { started: true, status: "busy" });
+      setActiveTabId(tabId);
+    },
+    [setActiveTabId, updateTab],
+  );
 
   const prevPanelOpenRef = useRef<boolean>(!!activePanel);
   const hasGrownForEditorRef = useRef<boolean>(false);
@@ -381,7 +386,7 @@ function App() {
   const openVaultDocument = useCallback(
     async (sourcePath: string) => {
       if (!activeTab) {
-        toastError("Start a session before opening a vault document.");
+        toastError("Start a session before opening a GenZen OS document.");
         return;
       }
 
@@ -594,7 +599,7 @@ function App() {
     });
   }, []);
 
-  // Auto-title scratch tabs from the Claude session summary once they go idle.
+  // Auto-title local sessions from the Claude session summary once they go idle.
   const prevStatusesRef = useRef<Record<string, SogoTab["status"]>>({});
   useEffect(() => {
     if (!tauriRuntime) return;
@@ -743,6 +748,7 @@ function App() {
       }
       if (e.key === "w") {
         e.preventDefault();
+        console.info(`[sogo lifecycle] cmd-w activeTab=${activeTab?.id ?? "none"} diff=${!!activeDiff} editorFocus=${!!activeEditor?.focusWithin}`);
         if (activeDiff) {
           closeDiff();
           return;
@@ -756,8 +762,8 @@ function App() {
         setActiveTabId(tabs[digit - 1].id);
       }
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [
     newTab,
     requestCloseTab,
@@ -802,7 +808,7 @@ function App() {
       {
         id: "toggle-sidebar",
         label: activePanel ? "Hide sidebar" : "Show sidebar",
-        keywords: "sidebar panel toggle files vault skills changes",
+        keywords: "sidebar panel toggle files genzen os skills changes",
         icon: <FolderOpen size={13} />,
         run: toggleSidebar,
       },
@@ -945,7 +951,8 @@ function App() {
                       onData={handleTerminalData}
                       onExit={handleTerminalExit}
                       onError={handleTerminalError}
-                      onStarted={(tabId) => updateTab(tabId, { started: true, status: "busy" })}
+                      onResumeRequested={resumeTab}
+                      onSpawnStarted={(tabId) => updateTab(tabId, { started: true, status: "busy" })}
                       onSessionId={handleSessionId}
                       onBell={handleBell}
                       onOpenFile={(path) => void openActiveFile(path)}
@@ -1231,7 +1238,7 @@ function TrafficLights({
 const PANEL_TITLES: Record<PanelName, string> = {
   files: "Files",
   changes: "Changes",
-  vault: "Vault",
+  vault: "GenZen OS",
   skills: "Skills",
 };
 
@@ -1345,7 +1352,7 @@ function EmptyState({
           Ready when you are.
         </h1>
         <p className="mt-3 max-w-sm text-[13.5px] leading-[1.7] text-cc-muted">
-          Sogo wraps Claude Code as a native macOS app. Start a scratch session or open a project folder.
+          Sogo wraps Claude Code as a native macOS app. Start a session or open a project folder.
         </p>
 
         <div className="mt-7 flex flex-wrap items-center gap-2">

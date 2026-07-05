@@ -142,8 +142,8 @@ pub fn read_text_file(
 
 #[tauri::command]
 pub fn read_vault_file(path: String) -> Result<FileContent, FileCommandError> {
-    let root = vault_root()?;
-    let target = resolve_existing_path(&root, &path)?;
+    let roots = vault_roots()?;
+    let target = resolve_existing_vault_path(&roots, &path)?;
     let metadata = fs::metadata(&target)
         .map_err(|error| file_error("notFound", format!("Could not stat file: {error}")))?;
 
@@ -180,8 +180,8 @@ pub fn write_vault_file(
     contents: String,
     expected_mtime_ms: Option<u128>,
 ) -> Result<FileMeta, FileCommandError> {
-    let root = vault_root()?;
-    let target = resolve_write_path(&root, &path)?;
+    let roots = vault_roots()?;
+    let target = resolve_write_vault_path(&roots, &path)?;
     let current_metadata = fs::metadata(&target).ok();
 
     if let Some(metadata) = &current_metadata {
@@ -235,14 +235,31 @@ pub fn write_vault_file(
     Ok(file_meta(&target, &metadata, true))
 }
 
-fn vault_root() -> Result<PathBuf, FileCommandError> {
+fn vault_roots() -> Result<Vec<PathBuf>, FileCommandError> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| file_error("noVault", "Could not resolve $HOME"))?;
-    let candidate = home.join("vault");
-    candidate
-        .canonicalize()
-        .map_err(|error| file_error("noVault", format!("Vault directory unavailable: {error}")))
+    let candidates = [
+        home.join("vault"),
+        home.join("Library")
+            .join("Mobile Documents")
+            .join("iCloud~md~obsidian")
+            .join("Documents")
+            .join("Obsidian"),
+    ];
+    let roots: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter_map(|candidate| candidate.canonicalize().ok())
+        .collect();
+
+    if roots.is_empty() {
+        Err(file_error(
+            "noVault",
+            "No local GenZen OS document roots are available",
+        ))
+    } else {
+        Ok(roots)
+    }
 }
 
 #[tauri::command]
@@ -415,6 +432,62 @@ fn resolve_write_path(root: &Path, requested: &str) -> Result<PathBuf, FileComma
     Ok(parent.join(file_name))
 }
 
+fn resolve_existing_vault_path(
+    roots: &[PathBuf],
+    requested: &str,
+) -> Result<PathBuf, FileCommandError> {
+    if Path::new(requested).is_absolute() {
+        let canonical = Path::new(requested)
+            .canonicalize()
+            .map_err(|error| file_error("notFound", format!("Path does not exist: {error}")))?;
+        ensure_under_any_root(roots, &canonical)?;
+        return Ok(canonical);
+    }
+
+    let mut last_error = None;
+    for root in roots {
+        match resolve_existing_path(root, requested) {
+            Ok(path) => return Ok(path),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        file_error("noVault", "No local GenZen OS document roots are available")
+    }))
+}
+
+fn resolve_write_vault_path(
+    roots: &[PathBuf],
+    requested: &str,
+) -> Result<PathBuf, FileCommandError> {
+    if Path::new(requested).is_absolute() {
+        if Path::new(requested).exists() {
+            return resolve_existing_vault_path(roots, requested);
+        }
+
+        let parent = Path::new(requested)
+            .parent()
+            .ok_or_else(|| file_error("invalidPath", "File path has no parent directory"))?
+            .canonicalize()
+            .map_err(|error| {
+                file_error(
+                    "notFound",
+                    format!("Parent directory does not exist: {error}"),
+                )
+            })?;
+        ensure_under_any_root(roots, &parent)?;
+        let file_name = Path::new(requested)
+            .file_name()
+            .ok_or_else(|| file_error("invalidPath", "File path has no filename"))?;
+        return Ok(parent.join(file_name));
+    }
+
+    let primary_root = roots
+        .first()
+        .ok_or_else(|| file_error("noVault", "No local GenZen OS document roots are available"))?;
+    resolve_write_path(primary_root, requested)
+}
+
 fn joined_candidate(root: &Path, requested: &str) -> Result<PathBuf, FileCommandError> {
     let requested_path = Path::new(requested);
     if requested_path
@@ -438,6 +511,20 @@ fn ensure_under_root(root: &Path, target: &Path) -> Result<(), FileCommandError>
         Err(file_error(
             "outsideWorkspace",
             "Path is outside the session workspace",
+        ))
+    }
+}
+
+fn ensure_under_any_root(roots: &[PathBuf], target: &Path) -> Result<(), FileCommandError> {
+    if roots
+        .iter()
+        .any(|root| target == root || target.starts_with(root))
+    {
+        Ok(())
+    } else {
+        Err(file_error(
+            "outsideWorkspace",
+            "Path is outside the local GenZen OS document roots",
         ))
     }
 }

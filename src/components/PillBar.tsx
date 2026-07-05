@@ -166,7 +166,7 @@ export function ControlRail({
 }) {
   return (
     <aside className="sogo-panel-in flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border bg-cc-surface/90 px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]">
-      <RailButton label="New scratch session (⌘N)" onClick={onNewTab}>
+      <RailButton label="New session (⌘N)" onClick={onNewTab}>
         <Plus size={14} />
       </RailButton>
       <RailButton label="Open folder session" onClick={onNewFolderTab}>
@@ -184,7 +184,7 @@ export function ControlRail({
       <RailButton label="Changes panel" active={activePanel === "changes"} onClick={() => onTogglePanel("changes")}>
         <GitBranch size={13} />
       </RailButton>
-      <RailButton label="Vault panel" active={activePanel === "vault"} onClick={() => onTogglePanel("vault")}>
+      <RailButton label="GenZen OS panel" active={activePanel === "vault"} onClick={() => onTogglePanel("vault")}>
         <BookOpen size={13} />
       </RailButton>
       <RailButton label="Skills panel" active={activePanel === "skills"} onClick={() => onTogglePanel("skills")}>

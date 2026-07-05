@@ -30,7 +30,8 @@ interface TerminalPaneProps {
   onData: (tabId: string, text: string) => void;
   onExit: (tabId: string) => void;
   onError: (tabId: string, error: string) => void;
-  onStarted: (tabId: string) => void;
+  onResumeRequested: (tabId: string) => void;
+  onSpawnStarted: (tabId: string) => void;
   onSessionId: (tabId: string, claudeSessionId: string) => void;
   onBell: (tabId: string) => void;
   onOpenFile: (path: string) => void;
@@ -68,7 +69,8 @@ export function TerminalPane({
   onData,
   onExit,
   onError,
-  onStarted,
+  onResumeRequested,
+  onSpawnStarted,
   onSessionId,
   onBell,
   onOpenFile,
@@ -92,11 +94,11 @@ export function TerminalPane({
     lastInputAt?: number;
     awaitingResponse?: boolean;
   }>({});
-  const callbacksRef = useRef({ onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile });
+  const callbacksRef = useRef({ onData, onExit, onError, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile });
 
   useEffect(() => {
-    callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile };
-  }, [onData, onError, onExit, onSessionId, onStarted, onBell, onOpenFile]);
+    callbacksRef.current = { onData, onExit, onError, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile };
+  }, [onData, onError, onExit, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile]);
 
   const copySmartText = useCallback(
     (text: string) => {
@@ -311,9 +313,9 @@ export function TerminalPane({
         fitFrameRef.current = null;
       }
       container.removeEventListener("paste", handlePaste, true);
-      bellDisposable.dispose();
-      smartLinkProvider.dispose();
-      terminal.dispose();
+      safeDispose("bell", () => bellDisposable.dispose());
+      safeDispose("smart-link-provider", () => smartLinkProvider.dispose());
+      safeDispose("terminal", () => terminal.dispose());
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
@@ -455,7 +457,7 @@ export function TerminalPane({
         firstByte: false,
       };
       logTiming(tab, "spawn-start", `cwd=${tab.cwd}`);
-      callbacksRef.current.onStarted(tab.id);
+      callbacksRef.current.onSpawnStarted(tab.id);
       const dimensions = fitAddonRef.current?.proposeDimensions();
       // The tab id doubles as the Claude session id: the backend passes
       // --session-id on first run and --resume when the session file exists.
@@ -481,7 +483,9 @@ export function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [active, tab.cwd, tab.id, tab.started]);
+  }, [active, tab.claudeSessionId, tab.cwd, tab.id, tab.started]);
+
+  const sessionBlocked = (tab.status === "stopped" || tab.status === "error") && !tab.started;
 
   const runFind = useCallback((query: string, direction: "next" | "previous") => {
     const searchAddon = searchAddonRef.current;
@@ -501,7 +505,7 @@ export function TerminalPane({
       className={active ? "session-terminal-shell relative h-full min-h-0 min-w-0" : "hidden"}
       data-session-id={tab.id}
     >
-      <div ref={containerRef} className="h-full min-h-0 min-w-0" />
+      <div ref={containerRef} className={`h-full min-h-0 min-w-0 ${sessionBlocked ? "pointer-events-none" : ""}`} />
       {findOpen ? (
         <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border bg-cc-surface/95 py-1 pl-3 pr-1 shadow-lg">
           <input
@@ -548,17 +552,19 @@ export function TerminalPane({
           </button>
         </div>
       ) : null}
-      {(tab.status === "stopped" || tab.status === "error") && !tab.started ? (
-        // z-30 keeps this above xterm's link-layer canvas, which carries a
-        // positive z-index and would otherwise swallow clicks while staying
-        // visually transparent.
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-cc-background/90">
+      {sessionBlocked ? (
+        // z-[70] and pointer-events ownership keep this above xterm's link
+        // layer and every app overlay except modal dialogs.
+        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-cc-background/90 pointer-events-auto">
           <div className="max-w-sm text-center">
             <div className="text-sm font-medium">{tab.label}</div>
             <div className="mt-1 text-xs text-cc-muted">{tab.cwd}</div>
             <button
               className="mt-4 rounded-md bg-cc-accent px-3 py-1.5 text-xs font-medium text-cc-background"
-              onClick={() => onStarted(tab.id)}
+              onClick={() => {
+                console.info(`[sogo timing] ${tab.label} resume-requested`);
+                onResumeRequested(tab.id);
+              }}
             >
               {tab.status === "error" ? "Retry session" : "Resume session"}
             </button>
@@ -571,6 +577,14 @@ export function TerminalPane({
 
 function logTiming(tab: SogoTab, event: string, detail: string) {
   console.info(`[sogo timing] ${tab.label} ${event}: ${detail}`);
+}
+
+function safeDispose(label: string, dispose: () => void) {
+  try {
+    dispose();
+  } catch (error) {
+    console.warn(`[sogo lifecycle] ignored ${label} dispose error`, error);
+  }
 }
 
 function formatDelta(label: string, value?: number) {

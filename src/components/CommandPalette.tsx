@@ -143,9 +143,9 @@ export function CommandPalette({
       {
         id: "action:new-session",
         section: "Actions",
-        label: "New scratch session",
+        label: "New session",
         hint: "⌘N",
-        keywords: "new scratch session claude start",
+        keywords: "new session claude start",
         icon: <Play size={13} />,
         run: wrapped(onNewSession),
       },

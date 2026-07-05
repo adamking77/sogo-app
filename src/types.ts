@@ -22,6 +22,7 @@ export interface SessionInfo {
 export interface RuntimeConfig {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
+  intellizenLocalAccessKey?: string;
 }
 
 export interface SkillSummary {
