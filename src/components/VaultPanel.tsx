@@ -59,9 +59,11 @@ export function VaultPanel({ onOpenDocument, activePath }: VaultPanelProps) {
     setError(null);
     void loadDocuments(client, setDocuments, setError);
 
+    // The documents table lives in the "knowledge" schema — subscribing to
+    // "public" never fires.
     const channel = client
       .channel("sogo-vault-documents")
-      .on("postgres_changes", { event: "*", schema: "public", table: "documents" }, () => {
+      .on("postgres_changes", { event: "*", schema: "knowledge", table: "documents" }, () => {
         void loadDocuments(client, setDocuments, setError);
       })
       .subscribe();

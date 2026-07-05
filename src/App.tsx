@@ -1,46 +1,50 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import logoSvg from "@/assets/logo.svg";
-import {
-  Check,
-  FolderOpen,
-  PanelRight,
-  Play,
-  Pin,
-  PinOff,
-  X,
-} from "lucide-react";
+import { FolderOpen, History, Play, X } from "lucide-react";
 
-import { FilesPanel } from "@/components/FilesPanel";
+import { ChangesPanel } from "@/components/ChangesPanel";
+import { CommandPalette, type PaletteCommand, type PaletteMode } from "@/components/CommandPalette";
+import { DiffPane } from "@/components/DiffPane";
 import { FileEditorPane } from "@/components/FileEditorPane";
-import { Settings } from "@/components/Settings";
+import { FilesPanel } from "@/components/FilesPanel";
+import { PillBar, statusDotClass, statusLabel, type PanelName } from "@/components/PillBar";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { TabStrip } from "@/components/TabStrip";
 import { TerminalPane } from "@/components/TerminalPane";
+import { ToastHost } from "@/components/ToastHost";
 import { VaultPanel } from "@/components/VaultPanel";
+import { notifyUser, setAttentionBadge } from "@/lib/notifications";
 import { isTauriRuntime } from "@/lib/runtime";
+import {
+  FILE_EDITOR_DEFAULT_WIDTH,
+  PANE_GAP,
+  RIGHT_SIDEBAR_WIDTH,
+  ResizeHandle,
+  TERMINAL_EJECTED_DEFAULT_WIDTH,
+  TERMINAL_EJECTED_MIN_WIDTH,
+  TERMINAL_MIN_WIDTH_WITH_EDITOR,
+  TERMINAL_MIN_WIDTH_SOLO,
+  TERMINAL_ONLY_WINDOW_MIN_WIDTH,
+  FILE_EDITOR_MIN_WIDTH,
+  adjustWindowWidth,
+  beginHorizontalPaneResize,
+  clampEjectedTerminalWidth,
+  clampFileEditorWidth,
+  getWindowMinWidth,
+  growWindowBy,
+  readStoredNumber,
+  toggleManualZoom,
+  useDragHandler,
+  useEjectedTerminalWestResizeHandler,
+  useWindowResizeHandler,
+  type FileEditorLayout,
+} from "@/lib/windowGeometry";
 import { useEditorStore } from "@/stores/editorStore";
+import { useGitStore, changedPathSet } from "@/stores/gitStore";
 import { useSessionStore } from "@/stores/sessionStore";
-import { applyPalette, palettes, useThemeStore } from "@/stores/themeStore";
-import type { SogoTab } from "@/types";
-
-type ResizeEdge = "North" | "NorthEast" | "East" | "SouthEast" | "South" | "SouthWest" | "West" | "NorthWest";
-type FileEditorLayout = "overlay" | "ejected";
-
-const TERMINAL_ONLY_WINDOW_MIN_WIDTH = 440;
-const TERMINAL_MIN_WIDTH_SOLO = 420;
-const TERMINAL_MIN_WIDTH_WITH_EDITOR = 300;
-const TERMINAL_EJECTED_MIN_WIDTH = 320;
-const TERMINAL_EJECTED_MAX_WIDTH = 980;
-const TERMINAL_EJECTED_DEFAULT_WIDTH = 520;
-const FILE_EDITOR_MIN_WIDTH = 520;
-const FILE_EDITOR_MAX_WIDTH = 1080;
-const FILE_EDITOR_DEFAULT_WIDTH = 760;
-const PANE_GAP = 8;
-const RIGHT_SIDEBAR_WIDTH = 336;
-const PANEL_WINDOW_MIN_WIDTH = TERMINAL_ONLY_WINDOW_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP;
-const EDITOR_WINDOW_MIN_WIDTH = 840;
-const EDITOR_PANEL_WINDOW_MIN_WIDTH =
-  TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP * 2;
+import { toastError, toastSuccess } from "@/stores/toastStore";
+import { applyPalette, palettes, useThemeStore, useResolvedPalette, type PalettePreference } from "@/stores/themeStore";
+import type { FsChangedPayload, GitChange, HookEventPayload, SogoTab } from "@/types";
 
 const FONT_SIZE = {
   small: 12,
@@ -48,123 +52,69 @@ const FONT_SIZE = {
   large: 16,
 } as const;
 
-function getWindowMinWidth(editorVisible: boolean, panelOpen: boolean, fileEditorLayout: FileEditorLayout) {
-  if (editorVisible && fileEditorLayout === "ejected") {
-    const panelWidth = panelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
-    const gapCount = panelOpen ? 2 : 1;
-    return TERMINAL_EJECTED_MIN_WIDTH + FILE_EDITOR_MIN_WIDTH + panelWidth + PANE_GAP * gapCount;
-  }
-  if (editorVisible && panelOpen) return EDITOR_PANEL_WINDOW_MIN_WIDTH;
-  if (editorVisible) return EDITOR_WINDOW_MIN_WIDTH;
-  if (panelOpen) return PANEL_WINDOW_MIN_WIDTH;
-  return TERMINAL_ONLY_WINDOW_MIN_WIDTH;
-}
-
-function readStoredNumber(key: string, fallback: number) {
-  const value = Number(localStorage.getItem(key));
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function getAvailableEjectedPaneWidthForWindow(windowWidth: number, toolPanelOpen: boolean) {
-  const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
-  const gapCount = toolPanelOpen ? 2 : 1;
-  return windowWidth - toolPanelWidth - PANE_GAP * gapCount;
-}
-
-// In ejected mode the terminal column has a fixed width and the file-view
-// column is flex-1. Clamp the terminal so the flex file-view keeps at least
-// FILE_EDITOR_MIN_WIDTH.
-function clampEjectedTerminalWidth(width: number, toolPanelOpen: boolean) {
-  return clampEjectedTerminalWidthForWindow(width, toolPanelOpen, window.innerWidth);
-}
-
-function clampEjectedTerminalWidthForWindow(width: number, toolPanelOpen: boolean, windowWidth: number) {
-  const maxAvailable = getAvailableEjectedPaneWidthForWindow(windowWidth, toolPanelOpen) - FILE_EDITOR_MIN_WIDTH;
-  const effectiveMin = Math.min(TERMINAL_EJECTED_MIN_WIDTH, Math.max(220, maxAvailable));
-  const effectiveMax = Math.max(effectiveMin, Math.min(TERMINAL_EJECTED_MAX_WIDTH, maxAvailable));
-  return Math.round(clampNumber(width, effectiveMin, effectiveMax));
-}
-
-function clampFileEditorWidth(
-  width: number,
-  toolPanelOpen: boolean,
-  fileEditorLayout: FileEditorLayout,
-  terminalWidth = TERMINAL_MIN_WIDTH_WITH_EDITOR,
-) {
-  const toolPanelWidth = toolPanelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
-  const gapCount = toolPanelOpen ? 2 : 1;
-  const requiredTerminalWidth = fileEditorLayout === "ejected" ? terminalWidth : TERMINAL_MIN_WIDTH_WITH_EDITOR;
-  const maxAvailable = window.innerWidth - requiredTerminalWidth - toolPanelWidth - PANE_GAP * gapCount;
-  const effectiveMin = Math.min(FILE_EDITOR_MIN_WIDTH, Math.max(220, maxAvailable));
-  const effectiveMax = Math.max(effectiveMin, Math.min(FILE_EDITOR_MAX_WIDTH, maxAvailable));
-  return Math.round(Math.min(Math.max(width, effectiveMin), effectiveMax));
-}
-
-function beginHorizontalPaneResize(
-  event: ReactMouseEvent,
-  startWidth: number,
-  onResize: (width: number) => void,
-  options: { invert?: boolean } = {},
-) {
-  event.preventDefault();
-  event.stopPropagation();
-  const startX = event.clientX;
-  const previousCursor = document.body.style.cursor;
-  const previousUserSelect = document.body.style.userSelect;
-  document.body.style.cursor = "col-resize";
-  document.body.style.userSelect = "none";
-
-  const onMove = (moveEvent: MouseEvent) => {
-    const delta = options.invert ? startX - moveEvent.clientX : moveEvent.clientX - startX;
-    onResize(startWidth + delta);
-  };
-
-  const onUp = () => {
-    document.body.style.cursor = previousCursor;
-    document.body.style.userSelect = previousUserSelect;
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("mouseup", onUp);
-  };
-
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onUp);
-}
+const COMPACT_MAX_WIDTH = 560;
 
 function App() {
   const {
     tabs,
     activeTabId,
+    recentFolders,
     addTab,
     closeTab: removeTab,
     setActiveTabId,
     updateTab,
+    moveTab,
   } = useSessionStore();
   const idleTimersRef = useRef<Record<string, number>>({});
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
-  const [activePanel, setActivePanel] = useState<"vault" | "claude" | "files" | null>(null);
-  const [lastOpenedPanel, setLastOpenedPanel] = useState<"vault" | "claude" | "files">("files");
-  const [lastError, setLastError] = useState<string | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelName | null>(null);
+  const [lastOpenedPanel, setLastOpenedPanel] = useState<PanelName>("files");
   const [pinned, setPinned] = useState(() => localStorage.getItem("sogo.windowPinned") === "true");
   const [fileEditorWidth, setFileEditorWidth] = useState(() => readStoredNumber("sogo.fileEditorWidth", FILE_EDITOR_DEFAULT_WIDTH));
   const [terminalPaneWidth, setTerminalPaneWidth] = useState(() => readStoredNumber("sogo.terminalPaneWidth", TERMINAL_EJECTED_DEFAULT_WIDTH));
   const [fileEditorLayout, setFileEditorLayout] = useState<FileEditorLayout>(() => (
     localStorage.getItem("sogo.fileEditorLayout") === "ejected" ? "ejected" : "overlay"
   ));
-  const { paletteName, fontSize } = useThemeStore();
+  const [palette_, setPalette] = useState<{ open: boolean; mode: PaletteMode }>({ open: false, mode: "all" });
+  const [confirmingCloseTabId, setConfirmingCloseTabId] = useState<string | null>(null);
+  const [quitConfirm, setQuitConfirm] = useState(false);
+  const [diffByTab, setDiffByTab] = useState<Record<string, GitChange | undefined>>({});
+  const [fsRevisionBySession, setFsRevisionBySession] = useState<Record<string, number>>({});
+  const [windowFocused, setWindowFocused] = useState(true);
+  const [innerWidth, setInnerWidth] = useState(window.innerWidth);
+  const closeConfirmTimerRef = useRef<number | undefined>();
+  const { fontSize, setPreference } = useThemeStore();
+  const palette = useResolvedPalette();
   const editorSessions = useEditorStore((state) => state.sessions);
   const openFile = useEditorStore((state) => state.openFile);
   const saveEditor = useEditorStore((state) => state.save);
   const closeEditor = useEditorStore((state) => state.close);
-  const palette = palettes[paletteName];
+  const hideEditorWindow = useEditorStore((state) => state.hideWindow);
+  const showEditorWindow = useEditorStore((state) => state.showWindow);
+  const setEditorMode = useEditorStore((state) => state.setMode);
+  const gitBySession = useGitStore((state) => state.bySession);
   const tauriRuntime = isTauriRuntime();
 
   useEffect(() => {
     applyPalette(palette);
   }, [palette]);
+
+  useEffect(() => {
+    const onResize = () => setInnerWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const onFocus = () => setWindowFocused(true);
+    const onBlur = () => setWindowFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   useEffect(() => {
     if (!tauriRuntime) return;
@@ -190,7 +140,7 @@ function App() {
       });
       registered = true;
     }).catch(() => {
-      setLastError("Could not register Option+Space. Another app may own that shortcut.");
+      toastError("Could not register Option+Space. Another app may own that shortcut.");
     });
 
     return () => {
@@ -217,7 +167,10 @@ function App() {
     [activeTabId, tabs],
   );
   const activeEditor = activeTab ? editorSessions[activeTab.id] : undefined;
-  const editorVisible = !!activeEditor?.activePath && activeEditor.windowVisible;
+  const activeDiff = activeTab ? diffByTab[activeTab.id] : undefined;
+  const editorFileVisible = !!activeEditor?.activePath && activeEditor.windowVisible && !activeDiff;
+  const editorVisible = editorFileVisible || !!activeDiff;
+  const compact = pinned && innerWidth < COMPACT_MAX_WIDTH;
   const ejectedEditorActive = editorVisible && fileEditorLayout === "ejected";
   const renderedTerminalPaneWidth = ejectedEditorActive
     ? clampEjectedTerminalWidth(terminalPaneWidth, !!activePanel)
@@ -225,6 +178,17 @@ function App() {
   const renderedFileEditorWidth = editorVisible
     ? clampFileEditorWidth(fileEditorWidth, !!activePanel, fileEditorLayout, renderedTerminalPaneWidth)
     : fileEditorWidth;
+  const activeFsRevision = activeTab ? fsRevisionBySession[activeTab.id] ?? 0 : 0;
+  const activeChangedPaths = useMemo(
+    () => changedPathSet(activeTab ? gitBySession[activeTab.id] : undefined),
+    [activeTab, gitBySession],
+  );
+  const stoppedTabs = useMemo(
+    () => tabs.filter((tab) => tab.status === "stopped" && !tab.started),
+    [tabs],
+  );
+  const sessionRunning = !!activeTab && !!activeTab.started
+    && activeTab.status !== "stopped" && activeTab.status !== "error";
 
   useEffect(() => {
     localStorage.setItem("sogo.fileEditorWidth", String(fileEditorWidth));
@@ -255,11 +219,15 @@ function App() {
     return () => window.removeEventListener("resize", fitWidths);
   }, [activePanel, editorVisible, fileEditorLayout]);
 
-  const newTab = useCallback(async () => {
-    setLastError(null);
+  // Dock badge mirrors sessions waiting on the user.
+  useEffect(() => {
+    const attention = tabs.filter((tab) => tab.status === "awaiting-input").length;
+    void setAttentionBadge(attention);
+  }, [tabs]);
 
+  const newTab = useCallback(async () => {
     if (!tauriRuntime) {
-      setLastError("Claude sessions require the Tauri desktop runtime. Run pnpm tauri dev.");
+      toastError("Claude sessions require the Tauri desktop runtime. Run pnpm tauri dev.");
       return;
     }
 
@@ -268,15 +236,13 @@ function App() {
       const cwd = await invoke<string>("default_session_cwd");
       addTab(cwd, { label: `Scratch ${tabs.length + 1}`, folderChosen: false });
     } catch (error) {
-      setLastError(`Could not start a Claude session: ${String(error)}`);
+      toastError(`Could not start a Claude session: ${String(error)}`);
     }
   }, [addTab, tabs.length, tauriRuntime]);
 
   const newFolderTab = useCallback(async () => {
-    setLastError(null);
-
     if (!tauriRuntime) {
-      setLastError("Folder-backed Claude sessions require the Tauri desktop runtime. Run pnpm tauri dev.");
+      toastError("Folder-backed Claude sessions require the Tauri desktop runtime. Run pnpm tauri dev.");
       return;
     }
 
@@ -287,15 +253,20 @@ function App() {
         directory: true,
         multiple: false,
         title: "Choose a project folder",
+        defaultPath: recentFolders[0] ? parentDir(recentFolders[0]) : undefined,
       });
 
       if (!selected || Array.isArray(selected)) return;
 
       addTab(selected, { folderChosen: true });
     } catch (error) {
-      setLastError(`Could not start a folder-scoped session: ${String(error)}`);
+      toastError(`Could not start a folder-scoped session: ${String(error)}`);
     }
-  }, [addTab, tauriRuntime]);
+  }, [addTab, recentFolders, tauriRuntime]);
+
+  const openRecentFolder = useCallback((folder: string) => {
+    addTab(folder, { folderChosen: true });
+  }, [addTab]);
 
   const closeTab = useCallback(
     async (id: string) => {
@@ -305,6 +276,7 @@ function App() {
         return;
       }
 
+      setDiffByTab((current) => ({ ...current, [id]: undefined }));
       if (tauriRuntime) {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("close_session", { sessionId: id }).catch(() => undefined);
@@ -314,107 +286,154 @@ function App() {
     [removeTab, setActiveTabId, tauriRuntime],
   );
 
+  const cancelCloseConfirm = useCallback(() => {
+    window.clearTimeout(closeConfirmTimerRef.current);
+    setConfirmingCloseTabId(null);
+  }, []);
+
+  const requestCloseTab = useCallback(
+    (id: string) => {
+      const tab = tabs.find((candidate) => candidate.id === id);
+      if (!tab) return;
+      const running = tab.started && (tab.status === "busy" || tab.status === "awaiting-input" || tab.status === "idle");
+
+      if (running) {
+        // Second request (e.g. ⌘W twice) confirms.
+        if (confirmingCloseTabId === id) {
+          cancelCloseConfirm();
+          void closeTab(id);
+          return;
+        }
+        setConfirmingCloseTabId(id);
+        window.clearTimeout(closeConfirmTimerRef.current);
+        closeConfirmTimerRef.current = window.setTimeout(() => setConfirmingCloseTabId(null), 3500);
+      } else {
+        void closeTab(id);
+      }
+    },
+    [tabs, confirmingCloseTabId, cancelCloseConfirm, closeTab],
+  );
+
+  const confirmCloseTab = useCallback(() => {
+    if (!confirmingCloseTabId) return;
+    const id = confirmingCloseTabId;
+    cancelCloseConfirm();
+    void closeTab(id);
+  }, [confirmingCloseTabId, cancelCloseConfirm, closeTab]);
+
+  const closeOtherTabs = useCallback(
+    (keepId: string) => {
+      for (const tab of tabs) {
+        if (tab.id !== keepId) void closeTab(tab.id);
+      }
+    },
+    [tabs, closeTab],
+  );
+
+  const revealCwd = useCallback((tab: SogoTab) => {
+    if (!tauriRuntime) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) => {
+      void invoke("reveal_in_finder", { path: tab.cwd }).catch((error) => toastError(String(error)));
+    });
+  }, [tauriRuntime]);
+
+  const copySessionId = useCallback((tab: SogoTab) => {
+    const id = tab.claudeSessionId ?? tab.id;
+    void navigator.clipboard?.writeText(id).then(() => toastSuccess("Copied Claude session ID"));
+  }, []);
+
+  const stopActiveTab = useCallback(() => {
+    if (!activeTab || !tauriRuntime) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) => {
+      void invoke("interrupt_session", { sessionId: activeTab.id }).catch((error) => toastError(String(error)));
+    });
+  }, [activeTab, tauriRuntime]);
+
+  const resumeAll = useCallback(() => {
+    for (const tab of stoppedTabs) {
+      updateTab(tab.id, { started: true, status: "busy" });
+    }
+  }, [stoppedTabs, updateTab]);
+
   const prevPanelOpenRef = useRef<boolean>(!!activePanel);
   const hasGrownForEditorRef = useRef<boolean>(false);
 
-  const growWindowFor = useCallback(async (deltaW: number) => {
-    if (!tauriRuntime || deltaW <= 0) return;
-    try {
-      const { LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-      const [size, scaleFactor, position, monitor] = await Promise.all([
-        appWindow.innerSize(),
-        appWindow.scaleFactor(),
-        appWindow.outerPosition(),
-        currentMonitor(),
-      ]);
-      const currentW = size.width / scaleFactor;
-      const currentX = position.x / scaleFactor;
-      const workAreaW = monitor?.workArea?.size?.width
-        ? monitor.workArea.size.width / scaleFactor
-        : window.screen.availWidth;
-      const workAreaX = monitor?.workArea?.position?.x
-        ? monitor.workArea.position.x / scaleFactor
-        : 0;
-      const maxW = workAreaW - 24;
-      const nextW = Math.min(currentW + deltaW, maxW);
-      if (nextW - currentW >= 8) {
-        await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(size.height / scaleFactor)));
-      }
-
-      const maxX = workAreaX + workAreaW - nextW - 12;
-      if (currentX > maxX) {
-        await appWindow.setPosition(
-          new LogicalPosition(Math.round(Math.max(workAreaX + 12, maxX)), Math.round(position.y / scaleFactor)),
-        );
-      }
-    } catch {
-      // ignore
-    }
+  const growForEditor = useCallback(async () => {
+    if (hasGrownForEditorRef.current) return;
+    hasGrownForEditorRef.current = true;
+    await growWindowBy(tauriRuntime, FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP);
   }, [tauriRuntime]);
 
   const openActiveFile = useCallback(
     async (path: string) => {
       if (!activeTab) {
-        setLastError("Start a Claude session before opening a file.");
+        toastError("Start a Claude session before opening a file.");
         return;
       }
 
-      const shouldGrow = !hasGrownForEditorRef.current;
+      setDiffByTab((current) => ({ ...current, [activeTab.id]: undefined }));
       await openFile(activeTab.id, path);
-      if (shouldGrow) {
-        hasGrownForEditorRef.current = true;
-        await growWindowFor(FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP);
-      }
+      await growForEditor();
     },
-    [activeTab, openFile, growWindowFor],
+    [activeTab, openFile, growForEditor],
   );
 
   const openVaultDocument = useCallback(
     async (sourcePath: string) => {
       if (!activeTab) {
-        setLastError("Start a session before opening a vault document.");
+        toastError("Start a session before opening a vault document.");
         return;
       }
 
-      const shouldGrow = !hasGrownForEditorRef.current;
+      setDiffByTab((current) => ({ ...current, [activeTab.id]: undefined }));
       await openFile(activeTab.id, sourcePath, { source: "vault" });
-      if (shouldGrow) {
-        hasGrownForEditorRef.current = true;
-        await growWindowFor(FILE_EDITOR_DEFAULT_WIDTH + PANE_GAP);
-      }
+      await growForEditor();
     },
-    [activeTab, openFile, growWindowFor],
+    [activeTab, openFile, growForEditor],
   );
+
+  const openDiff = useCallback(
+    async (change: GitChange) => {
+      if (!activeTab) return;
+      setDiffByTab((current) => ({ ...current, [activeTab.id]: change }));
+      await growForEditor();
+    },
+    [activeTab, growForEditor],
+  );
+
+  const closeDiff = useCallback(() => {
+    if (!activeTab) return;
+    setDiffByTab((current) => ({ ...current, [activeTab.id]: undefined }));
+  }, [activeTab]);
 
   const activateSkill = useCallback(
     (skillName: string) => {
       if (!activeTab) {
-        setLastError("Start a Claude session before activating a skill.");
+        toastError("Start a Claude session before activating a skill.");
         return;
       }
 
       if (!tauriRuntime) {
-        setLastError("Skill activation requires the Tauri desktop runtime. Run pnpm tauri dev.");
+        toastError("Skill activation requires the Tauri desktop runtime. Run pnpm tauri dev.");
         return;
       }
 
       if (activeTab.status === "stopped" || activeTab.status === "error" || !activeTab.started) {
-        setLastError("Start the active Claude session before activating a skill.");
+        toastError("Start the active Claude session before activating a skill.");
         return;
       }
 
-      setLastError(null);
       void import("@tauri-apps/api/core")
         .then(({ invoke }) => invoke("write_to_session", {
           sessionId: activeTab.id,
           data: `Use the ${skillName} skill. `,
         }))
+        .then(() => window.dispatchEvent(new Event("sogo:focus-terminal")))
         .catch((error) => {
-          setLastError(`Could not insert ${skillName}: ${String(error)}`);
+          toastError(`Could not insert ${skillName}: ${String(error)}`);
         });
     },
-    [activeTab, tauriRuntime, updateTab],
+    [activeTab, tauriRuntime],
   );
 
   const handleTerminalData = useCallback(
@@ -444,7 +463,7 @@ function App() {
     (tabId: string, error: string) => {
       window.clearTimeout(idleTimersRef.current[tabId]);
       updateTab(tabId, { status: "error", started: false });
-      setLastError(error);
+      toastError(error);
     },
     [updateTab],
   );
@@ -456,15 +475,169 @@ function App() {
     [updateTab],
   );
 
+  const notifyAttention = useCallback(
+    (tab: SogoTab, message?: string | null) => {
+      const backgrounded = !windowFocused || tab.id !== activeTab?.id;
+      if (backgrounded) {
+        void notifyUser(tab.label, message || "Claude needs your input");
+      }
+    },
+    [windowFocused, activeTab],
+  );
+
+  const handleBell = useCallback(
+    (tabId: string) => {
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return;
+      window.clearTimeout(idleTimersRef.current[tabId]);
+      updateTab(tabId, { status: "awaiting-input" });
+      notifyAttention(tab);
+    },
+    [tabs, updateTab, notifyAttention],
+  );
+
+  // Claude Code hooks (Notification / Stop) — the reliable status source when
+  // enabled. Session IDs match tab IDs because we assign them at spawn.
+  useEffect(() => {
+    if (!tauriRuntime) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      if (cancelled) return;
+      unlisten = await listen<HookEventPayload>("hooks://event", (event) => {
+        if (cancelled) return;
+        const { sessionId, event: hookEvent, message } = event.payload;
+        const state = useSessionStore.getState();
+        const tab = state.tabs.find((candidate) => candidate.id === sessionId);
+        if (!tab) return;
+
+        if (hookEvent === "Notification") {
+          window.clearTimeout(idleTimersRef.current[tab.id]);
+          state.updateTab(tab.id, { status: "awaiting-input" });
+          notifyAttention(tab, message);
+        } else if (hookEvent === "Stop") {
+          window.clearTimeout(idleTimersRef.current[tab.id]);
+          state.updateTab(tab.id, { status: "idle" });
+          const backgrounded = !document.hasFocus() || tab.id !== useSessionStore.getState().activeTabId;
+          if (backgrounded) {
+            void notifyUser(tab.label, "Claude finished");
+          }
+        }
+      });
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [tauriRuntime, notifyAttention]);
+
+  // Filesystem watcher: refresh file tree, git status, and the open editor
+  // buffer when Claude (or anything else) writes to the workspace.
+  useEffect(() => {
+    if (!tauriRuntime) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      if (cancelled) return;
+      unlisten = await listen<FsChangedPayload>("fs://changed", (event) => {
+        if (cancelled) return;
+        const { sessionId, paths } = event.payload;
+        setFsRevisionBySession((current) => ({
+          ...current,
+          [sessionId]: (current[sessionId] ?? 0) + 1,
+        }));
+        void useGitStore.getState().refresh(sessionId);
+        const editorState = useEditorStore.getState();
+        for (const path of paths) {
+          editorState.handleExternalChange(sessionId, path);
+        }
+      });
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [tauriRuntime]);
+
+  // Quit confirm: intercept window close while sessions are running.
+  const quitConfirmRef = useRef(false);
+  useEffect(() => {
+    if (!tauriRuntime) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      if (cancelled) return;
+      unlisten = await getCurrentWindow().onCloseRequested((event) => {
+        const running = useSessionStore.getState().tabs.some(
+          (tab) => tab.started && tab.status !== "stopped" && tab.status !== "error",
+        );
+        if (running && !quitConfirmRef.current) {
+          event.preventDefault();
+          setQuitConfirm(true);
+        }
+      });
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [tauriRuntime]);
+
+  const confirmQuit = useCallback(() => {
+    quitConfirmRef.current = true;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      void getCurrentWindow().destroy();
+    });
+  }, []);
+
+  // Auto-title scratch tabs from the Claude session summary once they go idle.
+  const prevStatusesRef = useRef<Record<string, SogoTab["status"]>>({});
+  useEffect(() => {
+    if (!tauriRuntime) return;
+    const previous = prevStatusesRef.current;
+
+    for (const tab of tabs) {
+      const was = previous[tab.id];
+      previous[tab.id] = tab.status;
+      if (tab.status !== "idle" || was === "idle" || was === undefined) continue;
+      if (tab.folderChosen || tab.customLabel || !tab.started) continue;
+
+      void import("@tauri-apps/api/core").then(({ invoke }) => {
+        void invoke<string | null>("session_summary", { cwd: tab.cwd, sessionId: tab.id })
+          .then((summary) => {
+            if (!summary) return;
+            const label = summary.length > 32 ? `${summary.slice(0, 31)}…` : summary;
+            const current = useSessionStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+            if (current && !current.customLabel && current.label !== label) {
+              updateTab(tab.id, { label });
+            }
+          })
+          .catch(() => undefined);
+      });
+    }
+  }, [tabs, tauriRuntime, updateTab]);
+
   const runWindowAction = useCallback(
-    (action: "close" | "hide" | "minimize" | "toggleMaximize") => {
+    (action: "close" | "hide" | "minimize" | "zoom") => {
       if (!tauriRuntime) return;
+      if (action === "zoom") {
+        void toggleManualZoom(tauriRuntime);
+        return;
+      }
       void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
         const appWindow = getCurrentWindow();
         if (action === "close") return appWindow.close();
         if (action === "hide") return appWindow.hide();
-        if (action === "minimize") return appWindow.minimize();
-        return appWindow.toggleMaximize();
+        return appWindow.minimize();
       });
     },
     [tauriRuntime],
@@ -474,39 +647,26 @@ function App() {
     setTabsCollapsed((current) => !current);
   }, []);
 
-  const startTab = useCallback(
-    (id: string) => {
-      setLastError(null);
-      updateTab(id, { status: "busy", started: true });
-    },
-    [updateTab],
-  );
-
-
   useEffect(() => {
     if (activePanel) setLastOpenedPanel(activePanel);
   }, [activePanel]);
 
-  const togglePanel = useCallback((panel: "vault" | "claude" | "files") => {
+  const togglePanel = useCallback((panel: PanelName) => {
     setActivePanel((current) => (current === panel ? null : panel));
   }, []);
 
   const toggleSidebar = useCallback(() => {
-    void togglePanel(activePanel ?? lastOpenedPanel);
+    togglePanel(activePanel ?? lastOpenedPanel);
   }, [activePanel, lastOpenedPanel, togglePanel]);
 
-  const beginFileEditorResize = useCallback((event: ReactMouseEvent) => {
+  const beginFileEditorResize = useCallback((event: React.MouseEvent) => {
     beginHorizontalPaneResize(event, renderedFileEditorWidth, (nextWidth) => {
       setFileEditorWidth(clampFileEditorWidth(nextWidth, !!activePanel, fileEditorLayout, renderedTerminalPaneWidth));
     }, { invert: true });
   }, [activePanel, fileEditorLayout, renderedFileEditorWidth, renderedTerminalPaneWidth]);
 
   // Ejected mode: terminal column is fixed-width, file-view column is flex-1.
-  // Every column edge resizes terminalPaneWidth; the flex file-view absorbs the
-  // inverse. Divider edges (terminal-right ≡ file-view-left) drag normally;
-  // outer edges (terminal-left, file-view-right) are inverted so dragging
-  // outward grows the column under the cursor.
-  const beginTerminalDividerResize = useCallback((event: ReactMouseEvent) => {
+  const beginTerminalDividerResize = useCallback((event: React.MouseEvent) => {
     beginHorizontalPaneResize(event, renderedTerminalPaneWidth, (nextWidth) => {
       setTerminalPaneWidth(clampEjectedTerminalWidth(nextWidth, !!activePanel));
     });
@@ -516,6 +676,7 @@ function App() {
     setFileEditorLayout((current) => (current === "ejected" ? "overlay" : "ejected"));
   }, []);
 
+  // Grow/shrink the window when the sidebar opens/closes.
   useEffect(() => {
     if (!tauriRuntime) return;
 
@@ -526,46 +687,35 @@ function App() {
 
     if (!panelOpened && !panelClosed) return;
 
-    void import("@tauri-apps/api/window")
-      .then(async ({ LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow }) => {
-        const appWindow = getCurrentWindow();
-        const [size, scaleFactor, position, monitor] = await Promise.all([
-          appWindow.innerSize(),
-          appWindow.scaleFactor(),
-          appWindow.outerPosition(),
-          currentMonitor(),
-        ]);
-        const currentW = size.width / scaleFactor;
-        const currentH = size.height / scaleFactor;
-        const currentX = position.x / scaleFactor;
-        const workAreaW = monitor?.workArea?.size?.width
-          ? monitor.workArea.size.width / scaleFactor
-          : window.screen.availWidth;
-        const workAreaX = monitor?.workArea?.position?.x
-          ? monitor.workArea.position.x / scaleFactor
-          : 0;
-
-        const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
-        const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
-        const maxW = workAreaW - 24;
-        const nextW = Math.min(Math.max(currentW + deltaW, minW), maxW);
-        if (Math.abs(nextW - currentW) >= 8) {
-          await appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(currentH)));
-        }
-
-        const maxX = workAreaX + workAreaW - nextW - 12;
-        if (currentX > maxX) {
-          await appWindow.setPosition(
-            new LogicalPosition(Math.round(Math.max(workAreaX + 12, maxX)), Math.round(position.y / scaleFactor)),
-          );
-        }
-      })
-      .catch(() => undefined);
+    const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
+    const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
+    void adjustWindowWidth(tauriRuntime, deltaW, minW);
   }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
+
+  const openPalette = useCallback((mode: PaletteMode = "all") => {
+    setPalette({ open: true, mode });
+  }, []);
+
+  const closePalette = useCallback(() => {
+    setPalette((current) => ({ ...current, open: false }));
+    window.dispatchEvent(new Event("sogo:focus-terminal"));
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
+
+      if (e.key === "k" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setPalette((current) => (current.open ? { ...current, open: false } : { open: true, mode: "all" }));
+        return;
+      }
+      if (e.key === "p" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openPalette("files");
+        return;
+      }
+
       if (activeTab && activeEditor?.focusWithin && activeEditor.activePath) {
         if (e.key === "s") {
           e.preventDefault();
@@ -574,7 +724,18 @@ function App() {
         }
         if (e.key === "w") {
           e.preventDefault();
-          closeEditor(activeTab.id);
+          if (closeEditor(activeTab.id)) {
+            window.dispatchEvent(new Event("sogo:focus-terminal"));
+          }
+          return;
+        }
+      }
+
+      if (e.key === "e" && activeTab && activeEditor?.activePath && activeEditor.windowVisible) {
+        const isMarkdown = /\.(md|mdx|markdown)$/i.test(activeEditor.activePath);
+        if (isMarkdown) {
+          e.preventDefault();
+          setEditorMode(activeTab.id, activeEditor.mode === "preview" ? "edit" : "preview");
           return;
         }
       }
@@ -586,7 +747,11 @@ function App() {
       }
       if (e.key === "w") {
         e.preventDefault();
-        if (activeTab) void closeTab(activeTab.id);
+        if (activeDiff) {
+          closeDiff();
+          return;
+        }
+        if (activeTab) requestCloseTab(activeTab.id);
         return;
       }
       const digit = parseInt(e.key, 10);
@@ -597,7 +762,20 @@ function App() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [newTab, closeTab, activeTab, activeEditor, tabs, setActiveTabId, saveEditor, closeEditor]);
+  }, [
+    newTab,
+    requestCloseTab,
+    activeTab,
+    activeEditor,
+    activeDiff,
+    closeDiff,
+    tabs,
+    setActiveTabId,
+    saveEditor,
+    closeEditor,
+    setEditorMode,
+    openPalette,
+  ]);
 
   const dragHandler = useDragHandler(tauriRuntime);
   const terminalMinWidth = editorVisible ? TERMINAL_MIN_WIDTH_WITH_EDITOR : TERMINAL_MIN_WIDTH_SOLO;
@@ -616,6 +794,69 @@ function App() {
     ? TERMINAL_MIN_WIDTH_WITH_EDITOR + FILE_EDITOR_MIN_WIDTH + PANE_GAP
     : TERMINAL_ONLY_WINDOW_MIN_WIDTH;
 
+  const editorChip = activeEditor?.activePath && !activeEditor.windowVisible
+    ? {
+        name: activeEditor.activePath.split("/").filter(Boolean).pop() ?? activeEditor.activePath,
+        dirty: activeEditor.buffer !== activeEditor.loadedContent,
+      }
+    : null;
+
+  const paletteExtraCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [
+      {
+        id: "toggle-sidebar",
+        label: activePanel ? "Hide sidebar" : "Show sidebar",
+        keywords: "sidebar panel toggle files vault skills changes",
+        icon: <FolderOpen size={13} />,
+        run: toggleSidebar,
+      },
+      {
+        id: "toggle-pin",
+        label: pinned ? "Unpin window" : "Pin window on top",
+        keywords: "pin float always on top",
+        icon: <History size={13} />,
+        run: () => setPinned((current) => !current),
+      },
+      {
+        id: "toggle-tabs",
+        label: tabsCollapsed ? "Show tab strip" : "Hide tab strip",
+        keywords: "tabs strip collapse",
+        icon: <History size={13} />,
+        run: toggleTabs,
+      },
+      {
+        id: "zoom",
+        label: "Zoom window",
+        keywords: "zoom maximize fill screen",
+        icon: <History size={13} />,
+        run: () => void toggleManualZoom(tauriRuntime),
+      },
+    ];
+
+    if (stoppedTabs.length > 0) {
+      commands.push({
+        id: "resume-all",
+        label: `Resume all sessions (${stoppedTabs.length})`,
+        keywords: "resume restart sessions all",
+        icon: <Play size={13} />,
+        run: resumeAll,
+      });
+    }
+
+    const themePrefs: PalettePreference[] = ["system", ...Object.keys(palettes) as PalettePreference[]];
+    for (const pref of themePrefs) {
+      commands.push({
+        id: `theme-${pref}`,
+        label: `Theme: ${pref === "system" ? "System" : palettes[pref as keyof typeof palettes].label}`,
+        keywords: `theme palette appearance ${pref}`,
+        icon: <History size={13} />,
+        run: () => setPreference(pref),
+      });
+    }
+
+    return commands;
+  }, [activePanel, pinned, tabsCollapsed, stoppedTabs.length, tauriRuntime, toggleSidebar, toggleTabs, resumeAll, setPreference]);
+
   return (
     <div className="relative flex h-full w-full gap-2 bg-transparent text-cc-foreground">
       <div
@@ -633,51 +874,51 @@ function App() {
           className="h-2 w-full shrink-0 cursor-grab"
           data-tauri-drag-region
           onMouseDown={dragHandler}
+          onDoubleClick={() => runWindowAction("zoom")}
         />
         <header
           className="flex h-10 shrink-0 items-center bg-cc-surface/80"
           data-tauri-drag-region
           onMouseDown={dragHandler}
+          onDoubleClick={(event) => {
+            if ((event.target as HTMLElement).closest("button, input, [role='tab']")) return;
+            runWindowAction("zoom");
+          }}
         >
           <TrafficLights
+            focused={windowFocused}
             onClose={() => runWindowAction("close")}
             onMinimize={() => runWindowAction("minimize")}
-            onZoom={() => runWindowAction("toggleMaximize")}
+            onZoom={() => runWindowAction("zoom")}
           />
           <div className="flex h-full shrink-0 items-center pl-1 pr-2">
             <img src={logoSvg} alt="Sogo" className="h-6 w-6 rounded-md" />
           </div>
 
           <div className="min-w-0 flex-1">
-            <TabStrip
-              tabs={tabs}
-              activeTabId={activeTab?.id}
-              collapsed={tabsCollapsed}
-              onSelect={setActiveTabId}
-              onNewTab={newTab}
-              onClose={closeTab}
-              onRename={(id, label) => updateTab(id, { label })}
-            />
-          </div>
-
-          <div className="flex shrink-0 items-center gap-0.5 pl-2 pr-2">
-            <ChromeButton
-              active={!!activePanel}
-              onClick={toggleSidebar}
-              title={activePanel ? "Hide sidebar" : "Show sidebar"}
-            >
-              <PanelRight size={13} />
-            </ChromeButton>
-
-            <span className="w-2" aria-hidden />
-
-            <ChromeButton
-              active={pinned}
-              onClick={() => setPinned((current) => !current)}
-              title={pinned ? "Unpin" : "Pin on top"}
-            >
-              {pinned ? <PinOff size={13} /> : <Pin size={13} />}
-            </ChromeButton>
+            {compact ? (
+              activeTab ? (
+                <div className="flex items-center gap-2 px-1 text-xs text-cc-muted">
+                  <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass(activeTab.status)}`} />
+                  <span className="truncate">{activeTab.label}</span>
+                </div>
+              ) : null
+            ) : (
+              <TabStrip
+                tabs={tabs}
+                activeTabId={activeTab?.id}
+                collapsed={tabsCollapsed}
+                onSelect={setActiveTabId}
+                onNewTab={newTab}
+                onClose={requestCloseTab}
+                onCloseOthers={closeOtherTabs}
+                onRename={(id, label) => updateTab(id, { label, customLabel: true })}
+                onMove={moveTab}
+                onRevealCwd={revealCwd}
+                onCopySessionId={copySessionId}
+                onShowAllTabs={() => openPalette("all")}
+              />
+            )}
           </div>
         </header>
 
@@ -686,21 +927,14 @@ function App() {
             className="flex min-w-0 flex-1 flex-col"
             style={{ minWidth: editorVisible && !ejectedEditorActive ? terminalMinWidth : 0 }}
           >
-            {activeTab ? (
-              <SessionBar
-                tab={activeTab}
-                onClose={() => void closeTab(activeTab.id)}
-              />
-            ) : null}
             <div className="relative min-h-0 flex-1 bg-[color:var(--cc-background)]">
-              {lastError ? (
-                <ErrorToast message={lastError} onDismiss={() => setLastError(null)} />
-              ) : null}
               {tabs.length === 0 ? (
                 <EmptyState
                   runtimeReady={tauriRuntime}
+                  recentFolders={recentFolders}
                   onNewTab={newTab}
                   onNewFolderTab={newFolderTab}
+                  onOpenRecent={openRecentFolder}
                 />
               ) : (
                 <>
@@ -716,16 +950,40 @@ function App() {
                       onError={handleTerminalError}
                       onStarted={(tabId) => updateTab(tabId, { started: true, status: "busy" })}
                       onSessionId={handleSessionId}
+                      onBell={handleBell}
+                      onOpenFile={(path) => void openActiveFile(path)}
                     />
                   ))}
                 </>
               )}
             </div>
-            <Settings
-              tabsCollapsed={tabsCollapsed}
-              onToggleTabs={toggleTabs}
-              onNewFolderSession={newFolderTab}
-            />
+            {!compact ? (
+              <PillBar
+                tab={activeTab}
+                activePanel={activePanel}
+                pinned={pinned}
+                tabsCollapsed={tabsCollapsed}
+                stoppedCount={stoppedTabs.length}
+                confirmingClose={!!activeTab && confirmingCloseTabId === activeTab.id}
+                editorChip={editorChip}
+                onRequestClose={() => activeTab && requestCloseTab(activeTab.id)}
+                onConfirmClose={confirmCloseTab}
+                onCancelClose={cancelCloseConfirm}
+                onStop={stopActiveTab}
+                onNewTab={() => void newTab()}
+                onNewFolderTab={() => void newFolderTab()}
+                onTogglePanel={togglePanel}
+                onTogglePin={() => setPinned((current) => !current)}
+                onToggleTabs={toggleTabs}
+                onResumeAll={resumeAll}
+                onShowEditor={() => {
+                  if (!activeTab) return;
+                  closeDiff();
+                  showEditorWindow(activeTab.id);
+                }}
+                onOpenPalette={() => openPalette("all")}
+              />
+            ) : null}
           </section>
           {activeTab && editorVisible && !ejectedEditorActive ? (
             <div
@@ -734,15 +992,28 @@ function App() {
               data-tauri-drag-region
               onMouseDown={dragHandler}
             >
-              <FileEditorPane
-                sessionId={activeTab.id}
-                cwd={activeTab.cwd}
-                layout={fileEditorLayout}
-                onDragMouseDown={dragHandler}
-                onBeginResize={beginFileEditorResize}
-                onResetWidth={() => setFileEditorWidth(FILE_EDITOR_DEFAULT_WIDTH)}
-                onToggleLayout={toggleFileEditorLayout}
-              />
+              {activeDiff ? (
+                <DiffPane
+                  sessionId={activeTab.id}
+                  change={activeDiff}
+                  fsRevision={activeFsRevision}
+                  onClose={closeDiff}
+                  onOpenFile={(relativePath) => void openActiveFile(relativePath)}
+                  onDragMouseDown={dragHandler}
+                  onBeginResize={beginFileEditorResize}
+                />
+              ) : (
+                <FileEditorPane
+                  sessionId={activeTab.id}
+                  cwd={activeTab.cwd}
+                  layout={fileEditorLayout}
+                  onDragMouseDown={dragHandler}
+                  onBeginResize={beginFileEditorResize}
+                  onResetWidth={() => setFileEditorWidth(FILE_EDITOR_DEFAULT_WIDTH)}
+                  onToggleLayout={toggleFileEditorLayout}
+                  onHide={() => hideEditorWindow(activeTab.id)}
+                />
+              )}
             </div>
           ) : null}
         </main>
@@ -764,6 +1035,45 @@ function App() {
             />
           </>
         ) : null}
+
+        <ToastHost />
+
+        <CommandPalette
+          open={palette_.open}
+          mode={palette_.mode}
+          onClose={closePalette}
+          tabs={tabs}
+          activeTabId={activeTab?.id}
+          recentFolders={recentFolders}
+          sessionId={activeTab?.id}
+          folderChosen={activeTab?.folderChosen ?? false}
+          onSelectTab={setActiveTabId}
+          onNewSession={() => void newTab()}
+          onOpenFolderDialog={() => void newFolderTab()}
+          onOpenRecentFolder={openRecentFolder}
+          onOpenFile={(path) => void openActiveFile(path)}
+          onActivateSkill={activateSkill}
+          extraCommands={paletteExtraCommands}
+        />
+
+        {quitConfirm ? (
+          <QuitConfirm
+            runningCount={tabs.filter((tab) => tab.started && tab.status !== "stopped" && tab.status !== "error").length}
+            onCancel={() => setQuitConfirm(false)}
+            onQuit={confirmQuit}
+          />
+        ) : null}
+
+        {compact && activeTab ? (
+          <button
+            className="absolute bottom-3 right-3 z-40 flex h-7 items-center gap-1.5 rounded-full border border-cc-border bg-cc-surface/90 px-2.5 text-[10.5px] text-cc-muted shadow-lg transition-colors hover:text-cc-foreground"
+            onClick={() => openPalette("all")}
+            title="Command palette (⌘K)"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass(activeTab.status)}`} />
+            {statusLabel(activeTab.status)}
+          </button>
+        ) : null}
       </div>
 
       {activeTab && editorVisible && ejectedEditorActive ? (
@@ -773,16 +1083,29 @@ function App() {
           data-tauri-drag-region
           onMouseDown={dragHandler}
         >
-          <FileEditorPane
-            sessionId={activeTab.id}
-            cwd={activeTab.cwd}
-            layout={fileEditorLayout}
-            onDragMouseDown={dragHandler}
-            onBeginResize={beginTerminalDividerResize}
-            onResetWidth={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
-            onToggleLayout={toggleFileEditorLayout}
-          />
-          {/* File-view column — right (outer) edge; left edge handle is inside FileEditorPane. */}
+          {activeDiff ? (
+            <DiffPane
+              sessionId={activeTab.id}
+              change={activeDiff}
+              fsRevision={activeFsRevision}
+              onClose={closeDiff}
+              onOpenFile={(relativePath) => void openActiveFile(relativePath)}
+              onDragMouseDown={dragHandler}
+              onBeginResize={beginTerminalDividerResize}
+            />
+          ) : (
+            <FileEditorPane
+              sessionId={activeTab.id}
+              cwd={activeTab.cwd}
+              layout={fileEditorLayout}
+              onDragMouseDown={dragHandler}
+              onBeginResize={beginTerminalDividerResize}
+              onResetWidth={() => setTerminalPaneWidth(TERMINAL_EJECTED_DEFAULT_WIDTH)}
+              onToggleLayout={toggleFileEditorLayout}
+              onHide={() => hideEditorWindow(activeTab.id)}
+            />
+          )}
+          {/* File-view column — right (outer) edge; left edge handle is inside the pane. */}
           <div
             className="absolute inset-y-4 right-0 z-40 w-3 cursor-e-resize"
             onMouseDown={beginEjectedEastWindowResize}
@@ -792,22 +1115,38 @@ function App() {
         </div>
       ) : null}
 
-      {activePanel ? (
+      {activePanel && !compact ? (
         <PanelWindow
           activePanel={activePanel}
-          onPanelChange={setActivePanel}
           onClose={() => setActivePanel(null)}
-          onActivateSkill={activateSkill}
           tauriRuntime={tauriRuntime}
-          cwd={activeTab?.cwd ?? ""}
-          sessionId={activeTab?.id ?? ""}
-          folderChosen={activeTab?.folderChosen ?? false}
-          activePath={activeEditor?.activePath}
-          activeSource={activeEditor?.source}
-          activeVaultRelPath={activeEditor?.vaultRelPath}
-          onOpenFile={openActiveFile}
-          onOpenVaultDocument={openVaultDocument}
-        />
+        >
+          {activePanel === "vault" ? (
+            <VaultPanel
+              onOpenDocument={(sourcePath) => void openVaultDocument(sourcePath)}
+              activePath={activeEditor?.source === "vault" ? activeEditor.vaultRelPath ?? activeEditor.activePath ?? null : null}
+            />
+          ) : activePanel === "skills" ? (
+            <SkillsPanel sessionRunning={sessionRunning} onActivateSkill={activateSkill} />
+          ) : activePanel === "changes" ? (
+            <ChangesPanel
+              sessionId={activeTab?.id ?? ""}
+              folderChosen={activeTab?.folderChosen ?? false}
+              activeDiffPath={activeDiff?.path}
+              onOpenDiff={(change) => void openDiff(change)}
+            />
+          ) : (
+            <FilesPanel
+              sessionId={activeTab?.id ?? ""}
+              cwd={activeTab?.cwd ?? ""}
+              folderChosen={activeTab?.folderChosen ?? false}
+              activePath={activeEditor?.source === "workspace" ? activeEditor?.activePath : null}
+              fsRevision={activeFsRevision}
+              changedPaths={activeChangedPaths}
+              onOpenFile={(path) => void openActiveFile(path)}
+            />
+          )}
+        </PanelWindow>
       ) : null}
 
       {/* Window-resize handles on the outer shell so they track the real window
@@ -830,101 +1169,13 @@ function App() {
   );
 }
 
-function SessionBar({
-  tab,
-  onClose,
-}: {
-  tab: SogoTab;
-  onClose: () => void;
-}) {
-  const isActive = (tab.status === "busy" || tab.status === "awaiting-input") && tab.started;
-  const [confirmingClose, setConfirmingClose] = useState(false);
-  const closeTimerRef = useRef<number | undefined>();
-
-  useEffect(() => () => {
-    window.clearTimeout(closeTimerRef.current);
-  }, []);
-
-  const requestClose = () => {
-    if (isActive) {
-      setConfirmingClose(true);
-      closeTimerRef.current = window.setTimeout(() => setConfirmingClose(false), 3500);
-    } else {
-      onClose();
-    }
-  };
-
-  const confirmClose = () => {
-    window.clearTimeout(closeTimerRef.current);
-    setConfirmingClose(false);
-    onClose();
-  };
-
-  return (
-    <div className="flex h-10 shrink-0 items-center gap-2 bg-cc-surface/60 px-3">
-      <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass(tab.status)}`} />
-      <span className="text-xs font-medium text-cc-foreground">{statusLabel(tab.status)}</span>
-      <span
-        className="min-w-0 flex-1 truncate text-xs text-cc-muted"
-        title={tab.cwd}
-        dir="rtl"
-      >
-        {compactPath(tab.cwd)}
-      </span>
-      {confirmingClose ? (
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-cc-muted">Close session?</span>
-          <button
-            className="flex h-7 items-center gap-1 rounded-md bg-red-500/15 px-2 text-xs text-red-300 hover:bg-red-500/25"
-            onClick={confirmClose}
-          >
-            <Check size={12} />
-            Close
-          </button>
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:text-cc-foreground"
-            onClick={() => { window.clearTimeout(closeTimerRef.current); setConfirmingClose(false); }}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      ) : (
-        <button
-          className="flex h-7 w-7 items-center justify-center rounded-md text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-          onClick={requestClose}
-          title="Close session"
-        >
-          <X size={14} />
-        </button>
-      )}
-    </div>
-  );
-}
-
-function compactPath(path: string) {
-  if (!path) return "";
-  const home = "/Users/";
-  if (path.startsWith(home)) {
-    const rest = path.slice(home.length);
-    const slashIdx = rest.indexOf("/");
-    if (slashIdx >= 0) {
-      const after = rest.slice(slashIdx + 1);
-      const parts = after.split("/").filter(Boolean);
-      if (parts.length <= 2) return `~/${after}`;
-      return `~/…/${parts.slice(-2).join("/")}`;
-    }
-    return `~/${rest}`;
-  }
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 3) return path;
-  return `/…/${parts.slice(-2).join("/")}`;
-}
-
 function TrafficLights({
+  focused,
   onClose,
   onMinimize,
   onZoom,
 }: {
+  focused: boolean;
   onClose: () => void;
   onMinimize: () => void;
   onZoom: () => void;
@@ -934,6 +1185,11 @@ function TrafficLights({
     action();
   };
 
+  const lightClass = (color: string, text: string) =>
+    `flex h-3 w-3 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-colors duration-200 hover:opacity-95 ${
+      focused ? `${color} ${text}` : "bg-[#57534e]/50 text-transparent"
+    }`;
+
   return (
     <div className="group/lights flex shrink-0 items-center gap-2 pl-3.5 pr-2">
       <button
@@ -942,7 +1198,7 @@ function TrafficLights({
         title="Close"
         onClick={handle(onClose)}
         onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-3 w-3 items-center justify-center rounded-full bg-[#ff5f57] text-[#4d0000] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-opacity hover:opacity-95"
+        className={lightClass("bg-[#ff5f57]", "text-[#4d0000]")}
       >
         <svg viewBox="0 0 8 8" width="6" height="6" className="opacity-0 transition-opacity group-hover/lights:opacity-100">
           <path d="M1.5 1.5 L6.5 6.5 M6.5 1.5 L1.5 6.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
@@ -954,7 +1210,7 @@ function TrafficLights({
         title="Minimize"
         onClick={handle(onMinimize)}
         onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-3 w-3 items-center justify-center rounded-full bg-[#febc2e] text-[#5a3300] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-opacity hover:opacity-95"
+        className={lightClass("bg-[#febc2e]", "text-[#5a3300]")}
       >
         <svg viewBox="0 0 8 8" width="6" height="6" className="opacity-0 transition-opacity group-hover/lights:opacity-100">
           <path d="M1.4 4 L6.6 4" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
@@ -966,7 +1222,7 @@ function TrafficLights({
         title="Zoom"
         onClick={handle(onZoom)}
         onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-3 w-3 items-center justify-center rounded-full bg-[#28c840] text-[#003800] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-opacity hover:opacity-95"
+        className={lightClass("bg-[#28c840]", "text-[#003800]")}
       >
         <svg viewBox="0 0 8 8" width="6" height="6" className="opacity-0 transition-opacity group-hover/lights:opacity-100">
           <path d="M2.2 2.2 L5.8 2.2 L5.8 5.8 Z M5.8 5.8 L2.2 5.8 L2.2 2.2 Z" fill="currentColor" />
@@ -976,86 +1232,29 @@ function TrafficLights({
   );
 }
 
-function ChromeButton({
-  active,
-  dim,
-  onClick,
-  title,
-  children,
-}: {
-  active?: boolean;
-  dim?: boolean;
-  onClick: () => void;
-  title: string;
-  children: ReactNode;
-}) {
-  const base = "flex h-7 w-7 items-center justify-center rounded-md transition-colors duration-150";
-  const tone = active
-    ? "bg-cc-surface-strong/60 text-cc-accent"
-    : dim
-      ? "text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
-      : "text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground";
-  return (
-    <button className={`${base} ${tone}`} onClick={onClick} title={title}>
-      {children}
-    </button>
-  );
-}
-
-function statusDotClass(status: SogoTab["status"]) {
-  if (status === "idle") return "bg-emerald-400";
-  if (status === "busy") return "bg-sky-400";
-  if (status === "awaiting-input") return "bg-amber-300";
-  if (status === "error") return "bg-red-400";
-  return "bg-cc-muted";
-}
-
-function statusLabel(status: SogoTab["status"]) {
-  if (status === "awaiting-input") return "Awaiting input";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
+const PANEL_TITLES: Record<PanelName, string> = {
+  files: "Files",
+  changes: "Changes",
+  vault: "Vault",
+  skills: "Skills",
+};
 
 function PanelWindow({
   activePanel,
-  onPanelChange,
   onClose,
-  onActivateSkill,
   tauriRuntime,
-  cwd,
-  sessionId,
-  folderChosen,
-  activePath,
-  activeSource,
-  activeVaultRelPath,
-  onOpenFile,
-  onOpenVaultDocument,
+  children,
 }: {
-  activePanel: "vault" | "claude" | "files";
-  onPanelChange: (panel: "vault" | "claude" | "files" | null) => void;
+  activePanel: PanelName;
   onClose: () => void;
-  onActivateSkill: (skillName: string) => void;
   tauriRuntime: boolean;
-  cwd: string;
-  sessionId: string;
-  folderChosen: boolean;
-  activePath?: string | null;
-  activeSource?: "workspace" | "vault";
-  activeVaultRelPath?: string | null;
-  onOpenFile: (path: string) => void;
-  onOpenVaultDocument: (sourcePath: string) => void;
+  children: ReactNode;
 }) {
   const dragHandler = useDragHandler(tauriRuntime);
 
-  const tabClass = (panel: "vault" | "claude" | "files") =>
-    `flex h-7 flex-1 items-center justify-center rounded-full border px-2.5 text-xs transition-colors duration-150 ${
-      activePanel === panel
-        ? "border-cc-border bg-cc-surface-strong text-cc-foreground"
-        : "border-transparent text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
-    }`;
-
   return (
     <aside
-      className="relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95"
+      className="sogo-panel-in relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95"
       style={{
         width: RIGHT_SIDEBAR_WIDTH,
         minWidth: RIGHT_SIDEBAR_WIDTH,
@@ -1068,56 +1267,74 @@ function PanelWindow({
         onMouseDown={dragHandler}
       />
       <div
-        className="flex h-10 shrink-0 items-center gap-1 px-2"
+        className="flex h-8 shrink-0 items-center justify-between px-3"
         data-tauri-drag-region
         onMouseDown={dragHandler}
       >
-        <button className={tabClass("files")} onClick={() => onPanelChange("files")}>
-          Files
-        </button>
-        <button className={tabClass("vault")} onClick={() => onPanelChange("vault")}>
-          Vault
-        </button>
-        <button className={tabClass("claude")} onClick={() => onPanelChange("claude")}>
-          Skills
-        </button>
+        <span className="text-[10.5px] uppercase tracking-wide text-cc-muted/70">
+          {PANEL_TITLES[activePanel]}
+        </span>
         <button
-          className="ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-cc-muted transition-colors duration-150 hover:bg-cc-surface-strong hover:text-cc-foreground"
           onClick={onClose}
           title="Close panel"
         >
           <X size={13} />
         </button>
       </div>
-      {activePanel === "vault" ? (
-        <VaultPanel
-          onOpenDocument={onOpenVaultDocument}
-          activePath={activeSource === "vault" ? activeVaultRelPath ?? activePath ?? null : null}
-        />
-      ) : activePanel === "claude" ? (
-        <SkillsPanel onActivateSkill={onActivateSkill} />
-      ) : (
-        <FilesPanel
-          sessionId={sessionId}
-          cwd={cwd}
-          folderChosen={folderChosen}
-          activePath={activePath}
-          onOpenFile={onOpenFile}
-        />
-      )}
+      {children}
     </aside>
   );
 }
 
+function QuitConfirm({
+  runningCount,
+  onCancel,
+  onQuit,
+}: {
+  runningCount: number;
+  onCancel: () => void;
+  onQuit: () => void;
+}) {
+  return (
+    <div className="absolute inset-0 z-[70] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/30" onMouseDown={onCancel} />
+      <div className="sogo-pop relative w-80 rounded-2xl border border-cc-border bg-cc-surface p-5 shadow-2xl">
+        <div className="text-sm font-medium text-cc-foreground">Quit Sogo?</div>
+        <p className="mt-1.5 text-xs leading-5 text-cc-muted">
+          {runningCount} running Claude session{runningCount === 1 ? "" : "s"} will stop. Sessions resume where they left off next time.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            className="h-7 rounded-full border border-cc-border px-3 text-xs text-cc-muted transition-colors hover:text-cc-foreground"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="h-7 rounded-full bg-red-500/15 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/25"
+            onClick={onQuit}
+          >
+            Quit
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function EmptyState({
   runtimeReady,
+  recentFolders,
   onNewTab,
   onNewFolderTab,
+  onOpenRecent,
 }: {
   runtimeReady: boolean;
+  recentFolders: string[];
   onNewTab: () => void;
   onNewFolderTab: () => void;
+  onOpenRecent: (folder: string) => void;
 }) {
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background">
@@ -1154,7 +1371,28 @@ function EmptyState({
           ) : null}
         </div>
 
+        {runtimeReady && recentFolders.length > 0 ? (
+          <div className="mt-6">
+            <div className="mb-2 text-[10px] uppercase tracking-wide text-cc-muted/60">Recent folders</div>
+            <div className="flex flex-wrap gap-1.5">
+              {recentFolders.slice(0, 5).map((folder) => (
+                <button
+                  key={folder}
+                  className="flex h-7 max-w-full items-center gap-1.5 rounded-full border border-cc-border/70 px-2.5 font-mono text-[10.5px] text-cc-muted transition-colors hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+                  onClick={() => onOpenRecent(folder)}
+                  title={folder}
+                >
+                  <History size={10} />
+                  <span className="truncate">{folder.split("/").filter(Boolean).pop()}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[10.5px] text-cc-muted/50">
+          <span><span className="text-cc-muted/80">⌘K</span> palette</span>
+          <span className="text-cc-muted/20">·</span>
           <span><span className="text-cc-muted/80">⌘N</span> session</span>
           <span className="text-cc-muted/20">·</span>
           <span><span className="text-cc-muted/80">⌘W</span> close</span>
@@ -1176,249 +1414,9 @@ function EmptyState({
 
 export default App;
 
-function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  const timerRef = useRef<number | undefined>();
-
-  useEffect(() => {
-    timerRef.current = window.setTimeout(onDismiss, 6000);
-    return () => window.clearTimeout(timerRef.current);
-  }, [message, onDismiss]);
-
-  return (
-    <div className="absolute inset-x-3 top-3 z-40 flex items-center gap-2.5 rounded-md border border-cc-border bg-cc-surface px-3 py-2.5 text-xs">
-      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
-      <span className="min-w-0 flex-1 text-cc-foreground">{message}</span>
-      <button
-        className="shrink-0 text-cc-muted hover:text-cc-foreground"
-        onClick={onDismiss}
-      >
-        <X size={11} />
-      </button>
-    </div>
-  );
-}
-
-function useDragHandler(tauriRuntime: boolean) {
-  return useCallback(
-    (event: React.MouseEvent) => {
-      if (!tauriRuntime || event.button !== 0) return;
-      if ((event.target as HTMLElement).closest("button, input, a, select")) return;
-      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        void getCurrentWindow().startDragging();
-      });
-    },
-    [tauriRuntime],
-  );
-}
-
-const CURSOR: Record<ResizeEdge, string> = {
-  North:     "cursor-n-resize",
-  NorthEast: "cursor-ne-resize",
-  East:      "cursor-e-resize",
-  SouthEast: "cursor-se-resize",
-  South:     "cursor-s-resize",
-  SouthWest: "cursor-sw-resize",
-  West:      "cursor-w-resize",
-  NorthWest: "cursor-nw-resize",
-};
-
-function useWindowResizeHandler(tauriRuntime: boolean, edge: ResizeEdge, minWidth: number) {
-  return useCallback(
-    async (event: React.MouseEvent) => {
-      if (!tauriRuntime) return;
-      event.preventDefault();
-      event.stopPropagation();
-
-      const { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-
-      const movesX = edge.includes("West");
-      const movesY = edge.includes("North");
-
-      const [size, scaleFactor, pos, monitor] = await Promise.all([
-        appWindow.innerSize(),
-        appWindow.scaleFactor(),
-        appWindow.outerPosition(),
-        currentMonitor(),
-      ]);
-
-      const startW  = size.width / scaleFactor;
-      const startH  = size.height / scaleFactor;
-      const startWX = pos.x / scaleFactor;
-      const startWY = pos.y / scaleFactor;
-      const startX  = event.screenX;
-      const startY  = event.screenY;
-      const workAreaW = monitor?.workArea?.size?.width
-        ? monitor.workArea.size.width / scaleFactor
-        : window.screen.availWidth;
-      const workAreaH = monitor?.workArea?.size?.height
-        ? monitor.workArea.size.height / scaleFactor
-        : window.screen.availHeight;
-      const workAreaX = monitor?.workArea?.position?.x
-        ? monitor.workArea.position.x / scaleFactor
-        : 0;
-      const workAreaY = monitor?.workArea?.position?.y
-        ? monitor.workArea.position.y / scaleFactor
-        : 0;
-      const maxWidthFromLeft = Math.max(minWidth, workAreaX + workAreaW - startWX - 12);
-      const maxWidthFromRight = Math.max(minWidth, startWX + startW - workAreaX - 12);
-      const maxHeightFromTop = Math.max(540, workAreaY + workAreaH - startWY - 12);
-      const maxHeightFromBottom = Math.max(540, startWY + startH - workAreaY - 12);
-
-      let frame: number | null = null;
-      let nextW = startW;
-      let nextH = startH;
-      let nextX = startWX;
-      let nextY = startWY;
-
-      const onMove = (e: MouseEvent) => {
-        const dx = e.screenX - startX;
-        const dy = e.screenY - startY;
-
-        if (edge.includes("East")) nextW = clampNumber(startW + dx, minWidth, maxWidthFromLeft);
-        if (edge.includes("West")) {
-          nextW = clampNumber(startW - dx, minWidth, maxWidthFromRight);
-          nextX = startWX + startW - nextW;
-        }
-        if (edge.includes("South")) nextH = clampNumber(startH + dy, 540, maxHeightFromTop);
-        if (edge.includes("North")) {
-          nextH = clampNumber(startH - dy, 540, maxHeightFromBottom);
-          nextY = startWY + startH - nextH;
-        }
-
-        if (!frame) {
-          frame = requestAnimationFrame(() => {
-            const ops: Promise<void>[] = [
-              appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(nextH))),
-            ];
-            if (movesX || movesY) {
-              ops.push(appWindow.setPosition(new LogicalPosition(Math.round(nextX), Math.round(nextY))));
-            }
-            void Promise.all(ops);
-            frame = null;
-          });
-        }
-      };
-
-      const onUp = () => {
-        if (frame) cancelAnimationFrame(frame);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        window.dispatchEvent(new Event("sogo:window-resize-end"));
-      };
-
-      window.dispatchEvent(new Event("sogo:window-resize-start"));
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    },
-    [tauriRuntime, edge, minWidth],
-  );
-}
-
-function useEjectedTerminalWestResizeHandler(
-  tauriRuntime: boolean,
-  minWidth: number,
-  terminalWidth: number,
-  panelOpen: boolean,
-  setTerminalWidth: (updater: number) => void,
-) {
-  return useCallback(
-    async (event: React.MouseEvent) => {
-      if (!tauriRuntime) return;
-      event.preventDefault();
-      event.stopPropagation();
-
-      const { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-
-      const [size, scaleFactor, pos, monitor] = await Promise.all([
-        appWindow.innerSize(),
-        appWindow.scaleFactor(),
-        appWindow.outerPosition(),
-        currentMonitor(),
-      ]);
-
-      const startW = size.width / scaleFactor;
-      const startH = size.height / scaleFactor;
-      const startWX = pos.x / scaleFactor;
-      const startWY = pos.y / scaleFactor;
-      const startX = event.screenX;
-      const workAreaW = monitor?.workArea?.size?.width
-        ? monitor.workArea.size.width / scaleFactor
-        : window.screen.availWidth;
-      const workAreaX = monitor?.workArea?.position?.x
-        ? monitor.workArea.position.x / scaleFactor
-        : 0;
-      const maxWidthFromRight = Math.max(minWidth, startWX + startW - workAreaX - 12);
-
-      let frame: number | null = null;
-      let nextW = startW;
-      let nextX = startWX;
-      let nextTerminalWidth = terminalWidth;
-
-      const onMove = (e: MouseEvent) => {
-        const dx = e.screenX - startX;
-        const rawW = clampNumber(startW - dx, minWidth, maxWidthFromRight);
-        const rawTerminalWidth = terminalWidth + rawW - startW;
-        nextTerminalWidth = clampEjectedTerminalWidthForWindow(rawTerminalWidth, panelOpen, rawW);
-        nextW = clampNumber(startW + nextTerminalWidth - terminalWidth, minWidth, maxWidthFromRight);
-        nextX = startWX + startW - nextW;
-
-        if (!frame) {
-          frame = requestAnimationFrame(() => {
-            setTerminalWidth(nextTerminalWidth);
-            void Promise.all([
-              appWindow.setSize(new LogicalSize(Math.round(nextW), Math.round(startH))),
-              appWindow.setPosition(new LogicalPosition(Math.round(nextX), Math.round(startWY))),
-            ]);
-            frame = null;
-          });
-        }
-      };
-
-      const onUp = () => {
-        if (frame) cancelAnimationFrame(frame);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        window.dispatchEvent(new Event("sogo:window-resize-end"));
-      };
-
-      window.dispatchEvent(new Event("sogo:window-resize-start"));
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    },
-    [tauriRuntime, minWidth, terminalWidth, panelOpen, setTerminalWidth],
-  );
-}
-
-function ResizeHandle({ tauriRuntime, edge, minWidth }: { tauriRuntime: boolean; edge: ResizeEdge; minWidth: number }) {
-  const handleMouseDown = useWindowResizeHandler(tauriRuntime, edge, minWidth);
-
-  const cursor = CURSOR[edge];
-
-  // Corners
-  if (edge === "NorthWest") return <div className={`absolute left-0 top-0 z-20 h-4 w-4 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "NorthEast") return <div className={`absolute right-0 top-0 z-20 h-4 w-4 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "SouthWest") return <div className={`absolute bottom-0 left-0 z-20 h-4 w-4 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "SouthEast") {
-    return (
-      <div className={`group absolute bottom-2 right-2 z-20 p-2 ${cursor}`} onMouseDown={handleMouseDown}>
-        <svg width="10" height="10" viewBox="0 0 10 10" className="text-cc-muted opacity-20 transition-opacity duration-200 group-hover:opacity-70">
-          <circle cx="8.5" cy="8.5" r="1.1" fill="currentColor" />
-          <circle cx="5"   cy="8.5" r="1.1" fill="currentColor" />
-          <circle cx="8.5" cy="5"   r="1.1" fill="currentColor" />
-        </svg>
-      </div>
-    );
-  }
-
-  // Edges
-  if (edge === "North") return <div className={`absolute inset-x-4 top-0 z-30 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "South") return <div className={`absolute inset-x-4 bottom-0 z-30 h-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "East")  return <div className={`absolute inset-y-4 right-0 z-30 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-  if (edge === "West")  return <div className={`absolute inset-y-4 left-0 z-30 w-1.5 ${cursor}`} onMouseDown={handleMouseDown} />;
-
-  return null;
+function parentDir(path: string) {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : path;
 }
 
 function inferStatusFromOutput(text: string): SogoTab["status"] {

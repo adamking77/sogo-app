@@ -8,6 +8,15 @@ export interface SogoTab {
   claudeSessionId?: string;
   started?: boolean;
   folderChosen?: boolean;
+  /** True once the user has renamed the tab; blocks auto-titling. */
+  customLabel?: boolean;
+}
+
+export interface SessionInfo {
+  sessionId: string;
+  cwd: string;
+  claudeSessionId: string;
+  resumed: boolean;
 }
 
 export interface RuntimeConfig {
@@ -53,4 +62,21 @@ export interface FileContent {
 export interface FileCommandError {
   kind: string;
   message: string;
+}
+
+export interface GitChange {
+  status: string;
+  path: string;
+}
+
+export interface FsChangedPayload {
+  sessionId: string;
+  paths: string[];
+}
+
+export interface HookEventPayload {
+  sessionId: string;
+  event: string;
+  message?: string | null;
+  cwd?: string | null;
 }

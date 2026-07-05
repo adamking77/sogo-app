@@ -3,9 +3,9 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose, Engine as _};
@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::watch;
+
+const OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(8);
+const OUTPUT_COALESCE_MAX_BYTES: usize = 128 * 1024;
 
 #[derive(Default)]
 pub struct PtyRegistry {
@@ -34,7 +39,6 @@ pub struct SpawnRequest {
     cwd: String,
     cols: u16,
     rows: u16,
-    resume_session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +46,8 @@ pub struct SpawnRequest {
 pub struct SessionInfo {
     session_id: String,
     cwd: String,
+    claude_session_id: String,
+    resumed: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -58,19 +64,42 @@ struct PtyExitEvent {
     code: Option<i32>,
 }
 
+/// Environment captured from an interactive login shell so PTY children see
+/// the user's real PATH and exports even when the app is launched from Dock.
+pub(crate) fn login_shell_env() -> &'static HashMap<String, String> {
+    static ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+    ENV.get_or_init(|| {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        match std::process::Command::new(&shell)
+            .args(["-lc", "/usr/bin/env -0"])
+            .output()
+        {
+            Ok(output) if output.status.success() => parse_env_output(&output.stdout),
+            _ => HashMap::new(),
+        }
+    })
+}
+
+fn parse_env_output(bytes: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(bytes)
+        .split('\0')
+        .filter_map(|entry| {
+            let (key, value) = entry.split_once('=')?;
+            if key.is_empty() {
+                return None;
+            }
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn spawn_session(
     app: AppHandle,
     registry: State<'_, PtyRegistry>,
     request: SpawnRequest,
 ) -> Result<SessionInfo, String> {
-    eprintln!(
-        "[sogo timing] {} spawn_session start cwd={} resume={}",
-        request.session_id,
-        request.cwd,
-        request.resume_session_id.as_deref().unwrap_or("none")
-    );
-    let started_at = std::time::Instant::now();
+    let started_at = Instant::now();
     let cwd = PathBuf::from(&request.cwd);
     if !cwd.is_dir() {
         return Err(format!("Working directory does not exist: {}", request.cwd));
@@ -88,6 +117,15 @@ pub fn spawn_session(
         shutdown_session(session, false);
     }
 
+    let session_file = claude_project_dir(&canonical_cwd.to_string_lossy())
+        .join(format!("{}.jsonl", request.session_id));
+    let resumed = session_file.is_file();
+
+    eprintln!(
+        "[sogo timing] {} spawn_session start cwd={} resumed={}",
+        request.session_id, request.cwd, resumed
+    );
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -101,24 +139,28 @@ pub fn spawn_session(
     let claude_path = resolve_claude_binary();
     let mut command = CommandBuilder::new(claude_path);
     command.cwd(&canonical_cwd);
+    for (key, value) in login_shell_env() {
+        command.env(key, value);
+    }
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
 
-    if let Some(resume_session_id) = request.resume_session_id.as_deref() {
-        if !resume_session_id.trim().is_empty() {
-            command.arg("--resume");
-            command.arg(resume_session_id);
-        }
+    if resumed {
+        command.arg("--resume");
+    } else {
+        command.arg("--session-id");
     }
+    command.arg(&request.session_id);
 
     let child = pair
         .slave
         .spawn_command(command)
         .map_err(|error| format!("Failed to spawn Claude Code: {error}"))?;
     eprintln!(
-        "[sogo timing] {} claude spawned after {}ms",
+        "[sogo timing] {} claude spawned after {}ms resumed={}",
         request.session_id,
-        started_at.elapsed().as_millis()
+        started_at.elapsed().as_millis(),
+        resumed
     );
     drop(pair.slave);
 
@@ -148,37 +190,74 @@ pub fn spawn_session(
         .map_err(|_| "PTY roots lock poisoned".to_string())?
         .insert(request.session_id.clone(), canonical_cwd.clone());
 
-    let event_session_id = request.session_id.clone();
+    let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
+
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
-
         loop {
             match reader.read(&mut buffer) {
-                Ok(0) => {
-                    emit_exit_and_cleanup(&app, &event_session_id);
-                    break;
-                }
+                Ok(0) | Err(_) => break,
                 Ok(bytes_read) => {
-                    let data = general_purpose::STANDARD.encode(&buffer[..bytes_read]);
-                    let _ = app.emit(
-                        "pty://data",
-                        PtyDataEvent {
-                            session_id: event_session_id.clone(),
-                            data,
-                        },
-                    );
+                    if chunk_tx.send(buffer[..bytes_read].to_vec()).is_err() {
+                        break;
+                    }
                 }
-                Err(_) => {
-                    emit_exit_and_cleanup(&app, &event_session_id);
+            }
+        }
+        // Sender drops here; the emitter thread sees Disconnected and cleans up.
+    });
+
+    let emitter_app = app.clone();
+    let event_session_id = request.session_id.clone();
+    thread::spawn(move || loop {
+        let first = match chunk_rx.recv() {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                emit_exit_and_cleanup(&emitter_app, &event_session_id);
+                break;
+            }
+        };
+
+        let mut batch = first;
+        let deadline = Instant::now() + OUTPUT_COALESCE_WINDOW;
+        let mut disconnected = false;
+        while batch.len() < OUTPUT_COALESCE_MAX_BYTES {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match chunk_rx.recv_timeout(deadline - now) {
+                Ok(chunk) => batch.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
                     break;
                 }
             }
         }
+
+        let data = general_purpose::STANDARD.encode(&batch);
+        let _ = emitter_app.emit(
+            "pty://data",
+            PtyDataEvent {
+                session_id: event_session_id.clone(),
+                data,
+            },
+        );
+
+        if disconnected {
+            emit_exit_and_cleanup(&emitter_app, &event_session_id);
+            break;
+        }
     });
 
+    watch::start_workspace_watch(&app, &request.session_id, &canonical_cwd);
+
     Ok(SessionInfo {
-        session_id: request.session_id,
+        session_id: request.session_id.clone(),
         cwd: canonical_cwd.to_string_lossy().to_string(),
+        claude_session_id: request.session_id,
+        resumed,
     })
 }
 
@@ -238,7 +317,11 @@ pub fn resize_session(
 }
 
 #[tauri::command]
-pub fn close_session(registry: State<'_, PtyRegistry>, session_id: String) -> Result<(), String> {
+pub fn close_session(
+    app: AppHandle,
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+) -> Result<(), String> {
     let session = registry
         .sessions
         .lock()
@@ -246,13 +329,18 @@ pub fn close_session(registry: State<'_, PtyRegistry>, session_id: String) -> Re
         .remove(&session_id);
 
     if let Some(session) = session {
-        shutdown_session(session, true);
+        // Graceful shutdown sleeps; keep it off the command thread so closing
+        // a tab never blocks the UI.
+        thread::spawn(move || shutdown_session(session, true));
     }
+
     registry
         .roots
         .lock()
         .map_err(|_| "PTY roots lock poisoned".to_string())?
         .remove(&session_id);
+
+    watch::stop_workspace_watch(&app, &session_id);
 
     Ok(())
 }
@@ -313,51 +401,66 @@ impl PtyRegistry {
 }
 
 #[tauri::command]
-pub fn latest_claude_session_id(
-    cwd: String,
-    since_unix_millis: Option<u64>,
-) -> Result<Option<String>, String> {
-    let project_dir = claude_project_dir(&cwd);
-    let entries = match fs::read_dir(&project_dir) {
-        Ok(entries) => entries,
+pub fn session_summary(cwd: String, session_id: String) -> Result<Option<String>, String> {
+    let path = claude_project_dir(&cwd).join(format!("{session_id}.jsonl"));
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
         Err(_) => return Ok(None),
     };
 
-    let mut newest: Option<(std::time::SystemTime, String)> = None;
-    let recent_cutoff = since_unix_millis
-        .map(|millis| std::time::UNIX_EPOCH + Duration::from_millis(millis))
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .checked_sub(Duration::from_secs(10 * 60))
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        });
+    let mut summary: Option<String> = None;
+    let mut first_user_text: Option<String> = None;
 
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else {
+    for line in content.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let Ok(modified) = metadata.modified() else {
-            continue;
-        };
-        if modified < recent_cutoff {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-
-        match &newest {
-            Some((current_modified, _)) if *current_modified >= modified => {}
-            _ => newest = Some((modified, stem.to_string())),
+        match value.get("type").and_then(|kind| kind.as_str()) {
+            Some("summary") => {
+                if let Some(text) = value.get("summary").and_then(|text| text.as_str()) {
+                    summary = Some(text.to_string());
+                }
+            }
+            Some("user") if first_user_text.is_none() => {
+                first_user_text = extract_user_text(&value);
+            }
+            _ => {}
         }
     }
 
-    Ok(newest.map(|(_, session_id)| session_id))
+    Ok(summary.or_else(|| first_user_text.map(|text| truncate_chars(&text, 60))))
+}
+
+fn extract_user_text(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    for block in content.as_array()? {
+        if block.get("type").and_then(|kind| kind.as_str()) == Some("text") {
+            if let Some(text) = block.get("text").and_then(|text| text.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max).collect();
+    format!("{truncated}…")
 }
 
 fn get_session(
@@ -376,11 +479,15 @@ fn get_session(
 fn shutdown_session(session: Arc<PtySession>, graceful: bool) {
     if graceful {
         if let Ok(mut writer) = session.writer.lock() {
-            let _ = writer.write_all(b"/exit\r");
+            let _ = writer.write_all(&[3]);
             let _ = writer.flush();
         }
-
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_millis(200));
+        if let Ok(mut writer) = session.writer.lock() {
+            let _ = writer.write_all(&[3]);
+            let _ = writer.flush();
+        }
+        thread::sleep(Duration::from_millis(300));
     }
 
     if let Ok(mut child) = session.child.lock() {
@@ -504,6 +611,37 @@ mod tests {
         assert!(!is_executable_file(&root));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_null_separated_login_shell_env() {
+        let parsed = parse_env_output(b"PATH=/usr/bin:/bin\0HOME=/Users/adam\0EMPTY=\0=bad\0");
+
+        assert_eq!(parsed.get("PATH"), Some(&"/usr/bin:/bin".to_string()));
+        assert_eq!(parsed.get("HOME"), Some(&"/Users/adam".to_string()));
+        assert_eq!(parsed.get("EMPTY"), Some(&String::new()));
+        assert!(!parsed.contains_key(""));
+    }
+
+    #[test]
+    fn extracts_user_text_from_string_and_blocks() {
+        let string_message: serde_json::Value = serde_json::from_str(
+            r#"{"type":"user","message":{"content":"  hello world  "}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_user_text(&string_message),
+            Some("hello world".to_string())
+        );
+
+        let block_message: serde_json::Value = serde_json::from_str(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"},{"type":"text","text":"from block"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_user_text(&block_message),
+            Some("from block".to_string())
+        );
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
