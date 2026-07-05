@@ -25,7 +25,12 @@ export interface EditorSessionState {
 
 interface EditorState {
   sessions: Record<string, EditorSessionState>;
-  openFile: (sessionId: string, path: string, options?: { source?: EditorSource }) => Promise<void>;
+  openFile: (
+    sessionId: string,
+    path: string,
+    options?: { source?: EditorSource; preserveMode?: boolean },
+  ) => Promise<void>;
+  handleExternalChange: (sessionId: string, absolutePath: string) => void;
   setBuffer: (sessionId: string, contents: string) => void;
   setMode: (sessionId: string, mode: EditorMode) => void;
   save: (sessionId: string) => Promise<boolean>;
@@ -60,6 +65,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   openFile: async (sessionId, path, options) => {
     const source: EditorSource = options?.source ?? "workspace";
+    const previousMode = ensureSession(get, sessionId).mode;
     setSession(set, sessionId, {
       ...ensureSession(get, sessionId),
       activePath: path,
@@ -77,7 +83,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       const content = source === "vault"
         ? await invoke<FileContent>("read_vault_file", { path })
         : await invoke<FileContent>("read_text_file", { sessionId, path });
-      const mode: EditorMode = isMarkdownPath(content.path) ? "preview" : "edit";
+      const mode: EditorMode = options?.preserveMode
+        ? previousMode
+        : isMarkdownPath(content.path) ? "preview" : "edit";
 
       setSession(set, sessionId, {
         ...ensureSession(get, sessionId),
@@ -108,6 +116,26 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         vaultRelPath: source === "vault" ? path : undefined,
       });
     }
+  },
+
+  handleExternalChange: (sessionId, absolutePath) => {
+    const session = ensureSession(get, sessionId);
+    if (!session.activePath || session.loading || session.saving) return;
+    if (session.activePath !== absolutePath) return;
+
+    if (session.buffer !== session.loadedContent) {
+      setSession(set, sessionId, {
+        ...session,
+        error: "File changed on disk while you were editing",
+        conflict: true,
+      });
+      return;
+    }
+
+    void get().openFile(sessionId, session.activePath, {
+      source: session.source,
+      preserveMode: true,
+    });
   },
 
   setBuffer: (sessionId, contents) => {

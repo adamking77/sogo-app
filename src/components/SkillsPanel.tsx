@@ -5,10 +5,11 @@ import { isTauriRuntime } from "@/lib/runtime";
 import type { ClaudeInventory } from "@/types";
 
 interface SkillsPanelProps {
+  sessionRunning: boolean;
   onActivateSkill: (skillName: string) => void;
 }
 
-export function SkillsPanel({ onActivateSkill }: SkillsPanelProps) {
+export function SkillsPanel({ sessionRunning, onActivateSkill }: SkillsPanelProps) {
   const [inventory, setInventory] = useState<ClaudeInventory>({ skills: [], mcpServers: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -67,9 +68,10 @@ export function SkillsPanel({ onActivateSkill }: SkillsPanelProps) {
                 <button
                   key={skill.path}
                   type="button"
-                  className="block w-full rounded-md bg-cc-background/40 p-2 text-left transition-colors duration-150 hover:bg-cc-surface-strong focus:outline-none focus:ring-1 focus:ring-cc-accent/50"
+                  className="block w-full rounded-md bg-cc-background/40 p-2 text-left transition-colors duration-150 hover:bg-cc-surface-strong focus:outline-none focus:ring-1 focus:ring-cc-accent/50 disabled:cursor-default disabled:opacity-45 disabled:hover:bg-cc-background/40"
+                  disabled={!sessionRunning}
                   onClick={() => onActivateSkill(skill.name)}
-                  title={`Use ${skill.name}`}
+                  title={sessionRunning ? `Use ${skill.name}` : "Start a Claude session to activate skills"}
                 >
                   <div className="truncate text-xs font-medium text-cc-foreground">{skill.name}</div>
                   {skill.description ? (

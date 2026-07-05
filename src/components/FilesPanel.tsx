@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
@@ -9,17 +9,31 @@ interface FilesPanelProps {
   cwd: string;
   folderChosen: boolean;
   activePath?: string | null;
+  /** Bumps when the workspace filesystem changes; refreshes loaded dirs. */
+  fsRevision: number;
+  /** Workspace-relative changed paths from git, for dirty markers. */
+  changedPaths: Set<string>;
   onOpenFile: (path: string) => void;
 }
 
 type LoadedMap = Record<string, FileEntry[]>;
 type LoadingSet = Set<string>;
 
-export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFile }: FilesPanelProps) {
+export function FilesPanel({
+  sessionId,
+  cwd,
+  folderChosen,
+  activePath,
+  fsRevision,
+  changedPaths,
+  onOpenFile,
+}: FilesPanelProps) {
   const [loaded, setLoaded] = useState<LoadedMap>({});
   const [loading, setLoading] = useState<LoadingSet>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
 
   const loadDir = useCallback(async (path?: string) => {
     if (!isTauriRuntime()) return;
@@ -49,6 +63,15 @@ export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFil
     void loadDir();
   }, [cwd, folderChosen, loadDir]);
 
+  // Filesystem changed under us (usually Claude writing files): re-list every
+  // directory we have loaded so the tree stays truthful.
+  useEffect(() => {
+    if (fsRevision === 0 || !folderChosen) return;
+    for (const key of Object.keys(loadedRef.current)) {
+      void loadDir(key === cwd ? undefined : key);
+    }
+  }, [fsRevision, folderChosen, cwd, loadDir]);
+
   const toggle = useCallback(
     (path: string) => {
       setExpanded((prev) => {
@@ -57,12 +80,12 @@ export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFil
           next.delete(path);
         } else {
           next.add(path);
-          if (!loaded[path]) void loadDir(path);
+          if (!loadedRef.current[path]) void loadDir(path);
         }
         return next;
       });
     },
-    [loaded, loadDir],
+    [loadDir],
   );
 
   if (!folderChosen) {
@@ -96,6 +119,7 @@ export function FilesPanel({ sessionId, cwd, folderChosen, activePath, onOpenFil
             loading={loading}
             expanded={expanded}
             activePath={activePath}
+            changedPaths={changedPaths}
             onToggle={toggle}
             onOpenFile={onOpenFile}
           />
@@ -113,6 +137,13 @@ function formatFileError(error: unknown) {
   return String(error);
 }
 
+function isChanged(absolutePath: string, changedPaths: Set<string>) {
+  for (const relative of changedPaths) {
+    if (absolutePath.endsWith(`/${relative}`)) return true;
+  }
+  return false;
+}
+
 function TreeLevel({
   entries,
   parentPath,
@@ -121,6 +152,7 @@ function TreeLevel({
   loading,
   expanded,
   activePath,
+  changedPaths,
   onToggle,
   onOpenFile,
 }: {
@@ -131,6 +163,7 @@ function TreeLevel({
   loading: LoadingSet;
   expanded: Set<string>;
   activePath?: string | null;
+  changedPaths: Set<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
@@ -153,6 +186,7 @@ function TreeLevel({
           loading={loading}
           expanded={expanded}
           activePath={activePath}
+          changedPaths={changedPaths}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
         />
@@ -168,6 +202,7 @@ function TreeRow({
   loading,
   expanded,
   activePath,
+  changedPaths,
   onToggle,
   onOpenFile,
 }: {
@@ -177,12 +212,14 @@ function TreeRow({
   loading: LoadingSet;
   expanded: Set<string>;
   activePath?: string | null;
+  changedPaths: Set<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
   const isExpanded = expanded.has(entry.path);
   const children = loaded[entry.path];
   const isActive = !entry.isDir && activePath === entry.path;
+  const changed = !entry.isDir && changedPaths.size > 0 && isChanged(entry.path, changedPaths);
 
   return (
     <div>
@@ -202,9 +239,12 @@ function TreeRow({
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        <span className={`truncate pr-2 ${isActive ? "text-cc-foreground" : entry.isDir ? "text-cc-foreground/90" : "text-cc-muted"}`}>
+        <span className={`min-w-0 truncate ${isActive ? "text-cc-foreground" : entry.isDir ? "text-cc-foreground/90" : "text-cc-muted"}`}>
           {entry.name}
         </span>
+        {changed ? (
+          <span className="mr-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/80" title="Modified (git)" />
+        ) : null}
       </button>
       {entry.isDir && isExpanded ? (
         <TreeLevel
@@ -215,6 +255,7 @@ function TreeRow({
           loading={loading}
           expanded={expanded}
           activePath={activePath}
+          changedPaths={changedPaths}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
         />

@@ -11,7 +11,7 @@ use crate::pty::PtyRegistry;
 
 const MAX_TEXT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const BINARY_SAMPLE_BYTES: usize = 8 * 1024;
-const SKIP_DIRS: &[&str] = &[
+pub(crate) const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
     ".git",
@@ -222,6 +222,11 @@ pub fn write_vault_file(
     fs::write(&temp_path, contents.as_bytes()).map_err(|error| {
         file_error("writeFailed", format!("Could not write temp file: {error}"))
     })?;
+    // Rename replaces the inode; carry the original permissions (exec bit,
+    // custom modes) over to the replacement file.
+    if let Some(metadata) = &current_metadata {
+        let _ = fs::set_permissions(&temp_path, metadata.permissions());
+    }
     fs::rename(&temp_path, &target)
         .map_err(|error| file_error("writeFailed", format!("Could not replace file: {error}")))?;
 
@@ -304,12 +309,69 @@ pub fn write_text_file(
     fs::write(&temp_path, contents.as_bytes()).map_err(|error| {
         file_error("writeFailed", format!("Could not write temp file: {error}"))
     })?;
+    // Rename replaces the inode; carry the original permissions (exec bit,
+    // custom modes) over to the replacement file.
+    if let Some(metadata) = &current_metadata {
+        let _ = fs::set_permissions(&temp_path, metadata.permissions());
+    }
     fs::rename(&temp_path, &target)
         .map_err(|error| file_error("writeFailed", format!("Could not replace file: {error}")))?;
 
     let metadata = fs::metadata(&target)
         .map_err(|error| file_error("notFound", format!("Could not stat saved file: {error}")))?;
     Ok(file_meta(&target, &metadata, true))
+}
+
+const MAX_RECURSIVE_ENTRIES: usize = 4000;
+
+#[tauri::command]
+pub fn list_files_recursive(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    max_entries: Option<u32>,
+) -> Result<Vec<String>, FileCommandError> {
+    let root = workspace_root(&registry, &session_id)?;
+    let cap = max_entries
+        .map(|value| value as usize)
+        .unwrap_or(MAX_RECURSIVE_ENTRIES);
+
+    let mut results = Vec::new();
+    let mut stack = vec![root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        if results.len() >= cap {
+            break;
+        }
+
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.filter_map(Result::ok) {
+            if results.len() >= cap {
+                break;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                if SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                if let Ok(relative) = entry.path().strip_prefix(&root) {
+                    results.push(relative.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    results.sort();
+    Ok(results)
 }
 
 fn workspace_root(
@@ -412,7 +474,7 @@ fn mtime_ms(metadata: &fs::Metadata) -> Option<u128> {
         .map(|duration| duration.as_millis())
 }
 
-fn file_error(kind: impl Into<String>, message: impl Into<String>) -> FileCommandError {
+pub(crate) fn file_error(kind: impl Into<String>, message: impl Into<String>) -> FileCommandError {
     FileCommandError {
         kind: kind.into(),
         message: message.into(),

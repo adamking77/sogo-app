@@ -75,6 +75,67 @@ select {
   padding-left: 12px;
 }
 
+/* Pop-in for popovers, palette, context menus. */
+@keyframes sogo-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.sogo-pop {
+  animation: sogo-pop-in 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Sidebar panel entrance. */
+@keyframes sogo-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.sogo-panel-in {
+  animation: sogo-panel-in 190ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Attention pulse for sessions awaiting input. */
+@keyframes sogo-attention-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(252, 211, 77, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(252, 211, 77, 0.08);
+  }
+}
+
+.sogo-attention-pill {
+  animation: sogo-attention-ring 1.8s ease-in-out infinite;
+}
+
+@keyframes sogo-attention-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.8);
+  }
+}
+
+.sogo-attention-dot {
+  animation: sogo-attention-dot-pulse 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,

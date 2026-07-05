@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
+import { ArrowDown, ArrowUp, X } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
+import { toastSuccess } from "@/stores/toastStore";
 import type { Palette } from "@/stores/themeStore";
-import type { SogoTab } from "@/types";
+import type { FileMeta, SessionInfo, SogoTab } from "@/types";
 
 interface PtyDataPayload {
   sessionId: string;
@@ -27,6 +32,8 @@ interface TerminalPaneProps {
   onError: (tabId: string, error: string) => void;
   onStarted: (tabId: string) => void;
   onSessionId: (tabId: string, claudeSessionId: string) => void;
+  onBell: (tabId: string) => void;
+  onOpenFile: (path: string) => void;
 }
 
 interface TerminalDimensions {
@@ -49,7 +56,7 @@ const SMART_LINK_PATTERNS: Array<{ kind: SmartLinkKind; regex: RegExp }> = [
   },
   {
     kind: "path",
-    regex: /(?:~|\.{1,2}|\/)[^\s"'`<>|]+/g,
+    regex: /(?:~|\.{1,2}|\/)?[\w@.-]+(?:\/[\w@.-]+)+(?::\d+(?::\d+)?)?/g,
   },
 ];
 
@@ -63,18 +70,21 @@ export function TerminalPane({
   onError,
   onStarted,
   onSessionId,
+  onBell,
+  onOpenFile,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const spawnedRef = useRef(false);
-  const sessionPollRef = useRef<number | undefined>();
   const fitFrameRef = useRef<number | null>(null);
   const fitPausedRef = useRef(false);
   const lastDimensionsRef = useRef<TerminalDimensions | null>(null);
   const decoderRef = useRef(new TextDecoder());
-  const copiedNoticeTimerRef = useRef<number | undefined>();
-  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
   const timingRef = useRef<{
     spawnStart?: number;
     spawnResolved?: number;
@@ -82,29 +92,43 @@ export function TerminalPane({
     lastInputAt?: number;
     awaitingResponse?: boolean;
   }>({});
-  const callbacksRef = useRef({ onData, onExit, onError, onStarted, onSessionId });
+  const callbacksRef = useRef({ onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile });
 
   useEffect(() => {
-    callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId };
-  }, [onData, onError, onExit, onSessionId, onStarted]);
-
-  useEffect(() => () => {
-    window.clearTimeout(copiedNoticeTimerRef.current);
-  }, []);
-
-  const showCopiedNotice = useCallback((text: string) => {
-    window.clearTimeout(copiedNoticeTimerRef.current);
-    setCopiedNotice(`Copied ${text}`);
-    copiedNoticeTimerRef.current = window.setTimeout(() => setCopiedNotice(null), 1400);
-  }, []);
+    callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile };
+  }, [onData, onError, onExit, onSessionId, onStarted, onBell, onOpenFile]);
 
   const copySmartText = useCallback(
     (text: string) => {
       void copyTextToClipboard(text)
-        .then(() => showCopiedNotice(text))
+        .then(() => toastSuccess(`Copied ${text}`))
         .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
     },
-    [showCopiedNotice, tab.id],
+    [tab.id],
+  );
+
+  // Path links open in the editor pane when they resolve to a real text file
+  // inside the workspace; anything else falls back to copy.
+  const openSmartPath = useCallback(
+    (text: string) => {
+      if (!isTauriRuntime()) {
+        copySmartText(text);
+        return;
+      }
+
+      const withoutLine = text.replace(/(?::\d+)+$/, "");
+      void import("@tauri-apps/api/core")
+        .then(async ({ invoke }) => {
+          const meta = await invoke<FileMeta>("stat_file", { sessionId: tab.id, path: withoutLine });
+          if (meta.isText) {
+            callbacksRef.current.onOpenFile(meta.path);
+          } else {
+            copySmartText(text);
+          }
+        })
+        .catch(() => copySmartText(text));
+    },
+    [copySmartText, tab.id],
   );
 
   const fitNow = useCallback(() => {
@@ -157,17 +181,28 @@ export function TerminalPane({
     if (!containerRef.current || terminalRef.current) return;
     const container = containerRef.current;
 
+    // The WebGL renderer measures glyphs via canvas font strings, which cannot
+    // resolve CSS variables — resolve --cc-font-mono to a concrete family here.
+    const monoVar = getComputedStyle(document.documentElement)
+      .getPropertyValue("--cc-font-mono")
+      .trim();
     const terminal = new Terminal({
-      fontFamily: 'var(--cc-font-mono), "SF Mono", Menlo, Monaco, Consolas, monospace',
+      fontFamily: `${monoVar ? `${monoVar}, ` : ""}"SF Mono", Menlo, Monaco, Consolas, monospace`,
       fontSize,
       lineHeight: 1.35,
       cursorBlink: true,
       convertEol: false,
       scrollback: 20_000,
+      allowProposedApi: true,
       theme: palette.terminal,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    terminal.loadAddon(searchAddon);
+    const unicodeAddon = new Unicode11Addon();
+    terminal.loadAddon(unicodeAddon);
+    terminal.unicode.activeVersion = "11";
     terminal.loadAddon(new WebLinksAddon((event, uri) => {
       event.preventDefault();
       event.stopPropagation();
@@ -177,8 +212,28 @@ export function TerminalPane({
       }
       openExternalUrl(uri);
     }));
-    const smartLinkProvider = terminal.registerLinkProvider(createSmartLinkProvider(terminal, copySmartText));
+    const smartLinkProvider = terminal.registerLinkProvider(
+      createSmartLinkProvider(terminal, copySmartText, openSmartPath),
+    );
     terminal.open(container);
+
+    // GPU renderer; falls back to the DOM renderer when WebGL is unavailable
+    // or the context is lost.
+    let webglAddon: WebglAddon | null = null;
+    try {
+      webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon?.dispose();
+        webglAddon = null;
+      });
+      terminal.loadAddon(webglAddon);
+    } catch {
+      webglAddon = null;
+    }
+
+    const bellDisposable = terminal.onBell(() => {
+      callbacksRef.current.onBell(tab.id);
+    });
 
     // Shift+Enter should add a newline inside Claude Code's prompt instead of
     // submitting. ESC+CR is the sequence Option+Enter sends, which Claude Code
@@ -197,6 +252,12 @@ export function TerminalPane({
       ) {
         event.preventDefault();
         writeToPty("\x1b\r");
+        return false;
+      }
+      if (event.type === "keydown" && event.key === "f" && event.metaKey && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setFindOpen(true);
+        window.setTimeout(() => findInputRef.current?.select(), 0);
         return false;
       }
       return true;
@@ -235,7 +296,6 @@ export function TerminalPane({
       const now = performance.now();
       timingRef.current.lastInputAt = now;
       timingRef.current.awaitingResponse = true;
-      logTiming(tab, "input", `sent ${data.length} chars`);
       void import("@tauri-apps/api/core")
         .then(({ invoke }) => invoke("write_to_session", { sessionId: tab.id, data }))
         .catch((error) => callbacksRef.current.onError(tab.id, String(error)));
@@ -243,6 +303,7 @@ export function TerminalPane({
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
 
     return () => {
       if (fitFrameRef.current !== null) {
@@ -250,13 +311,12 @@ export function TerminalPane({
         fitFrameRef.current = null;
       }
       container.removeEventListener("paste", handlePaste, true);
+      bellDisposable.dispose();
       smartLinkProvider.dispose();
       terminal.dispose();
-      if (sessionPollRef.current) {
-        window.clearInterval(sessionPollRef.current);
-      }
       terminalRef.current = null;
       fitAddonRef.current = null;
+      searchAddonRef.current = null;
       lastDimensionsRef.current = null;
     };
   }, [tab.id]);
@@ -288,6 +348,14 @@ export function TerminalPane({
     };
   }, [active, tab.id, writeToPty]);
 
+  // Refocus requests (after skill activation, editor close, palette actions).
+  useEffect(() => {
+    if (!active) return;
+    const focus = () => terminalRef.current?.focus();
+    window.addEventListener("sogo:focus-terminal", focus);
+    return () => window.removeEventListener("sogo:focus-terminal", focus);
+  }, [active]);
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
 
@@ -307,21 +375,15 @@ export function TerminalPane({
         if (!timing.firstByte) {
           timing.firstByte = true;
           const spawnDelta = timing.spawnStart ? now - timing.spawnStart : undefined;
-          const resolveDelta = timing.spawnResolved ? now - timing.spawnResolved : undefined;
-          logTiming(
-            tab,
-            "first-byte",
-            `received ${bytes.length} bytes${formatDelta("spawn", spawnDelta)}${formatDelta("after invoke", resolveDelta)}`,
-          );
+          logTiming(tab, "first-byte", `received ${bytes.length} bytes${formatDelta("spawn", spawnDelta)}`);
         }
 
         if (timing.awaitingResponse && timing.lastInputAt) {
           timing.awaitingResponse = false;
-          logTiming(tab, "response-byte", `first output after input${formatDelta("latency", now - timing.lastInputAt)}`);
         }
 
         terminalRef.current?.write(bytes);
-        callbacksRef.current.onData(tab.id, decoderRef.current.decode(bytes));
+        callbacksRef.current.onData(tab.id, decoderRef.current.decode(bytes, { stream: true }));
       });
 
       unlistenExit = await listen<PtyExitPayload>("pty://exit", (event) => {
@@ -377,10 +439,9 @@ export function TerminalPane({
     if (!terminalRef.current || spawnedRef.current) return;
     if (!tab.started) return;
 
-    // Guard immediately — before any async work — so status/session ID changes
-    // that re-trigger this effect cannot race into a second spawn.
+    // Guard immediately — before any async work — so status changes that
+    // re-trigger this effect cannot race into a second spawn.
     spawnedRef.current = true;
-    const resumeSessionId = tab.claudeSessionId;
     let cancelled = false;
 
     void import("@tauri-apps/api/core").then(async (coreApi) => {
@@ -396,44 +457,21 @@ export function TerminalPane({
       logTiming(tab, "spawn-start", `cwd=${tab.cwd}`);
       callbacksRef.current.onStarted(tab.id);
       const dimensions = fitAddonRef.current?.proposeDimensions();
-      const sinceUnixMillis = Date.now();
-      await coreApi.invoke("spawn_session", {
+      // The tab id doubles as the Claude session id: the backend passes
+      // --session-id on first run and --resume when the session file exists.
+      const info = await coreApi.invoke<SessionInfo>("spawn_session", {
         request: {
           sessionId: tab.id,
           cwd: tab.cwd,
           cols: dimensions?.cols ?? 100,
           rows: dimensions?.rows ?? 30,
-          resumeSessionId,
         },
       });
       timingRef.current.spawnResolved = performance.now();
-      logTiming(tab, "spawn-invoke-resolved", `invoke returned${formatDelta("elapsed", timingRef.current.spawnResolved - timingRef.current.spawnStart!)}`);
+      logTiming(tab, "spawn-invoke-resolved", `resumed=${info.resumed}${formatDelta("elapsed", timingRef.current.spawnResolved - timingRef.current.spawnStart!)}`);
 
       if (cancelled) return;
-
-      if (sessionPollRef.current) {
-        window.clearInterval(sessionPollRef.current);
-      }
-
-      let attempts = 0;
-      sessionPollRef.current = window.setInterval(() => {
-        attempts += 1;
-        void coreApi
-          .invoke<string | null>("latest_claude_session_id", { cwd: tab.cwd, sinceUnixMillis })
-          .then((claudeSessionId) => {
-            if (claudeSessionId) {
-              callbacksRef.current.onSessionId(tab.id, claudeSessionId);
-              if (sessionPollRef.current) window.clearInterval(sessionPollRef.current);
-            } else if (attempts >= 15 && sessionPollRef.current) {
-              window.clearInterval(sessionPollRef.current);
-            }
-          })
-          .catch(() => {
-            if (attempts >= 15 && sessionPollRef.current) {
-              window.clearInterval(sessionPollRef.current);
-            }
-          });
-      }, 2000);
+      callbacksRef.current.onSessionId(tab.id, info.claudeSessionId);
     }).catch((error) => {
       spawnedRef.current = false;
       callbacksRef.current.onError(tab.id, String(error));
@@ -441,28 +479,72 @@ export function TerminalPane({
 
     return () => {
       cancelled = true;
-      if (sessionPollRef.current) {
-        window.clearInterval(sessionPollRef.current);
-      }
     };
   }, [active, tab.cwd, tab.id, tab.started]);
+
+  const runFind = useCallback((query: string, direction: "next" | "previous") => {
+    const searchAddon = searchAddonRef.current;
+    if (!searchAddon || !query) return;
+    if (direction === "next") searchAddon.findNext(query);
+    else searchAddon.findPrevious(query);
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    searchAddonRef.current?.clearDecorations();
+    terminalRef.current?.focus();
+  }, []);
 
   return (
     <div
       className={active ? "session-terminal-shell relative h-full min-h-0 min-w-0" : "hidden"}
       data-session-id={tab.id}
     >
-      <div className="flex h-7 items-center justify-between border-b border-cc-border bg-cc-surface/75 px-3 font-mono text-[11px] text-cc-muted">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-          <span className="truncate">{tab.folderChosen ? tab.cwd : "scratch terminal"}</span>
-        </div>
-        <span>Claude Code PTY</span>
-      </div>
-      <div ref={containerRef} className="h-[calc(100%-1.75rem)] min-h-0 min-w-0" />
-      {copiedNotice ? (
-        <div className="pointer-events-none absolute right-3 top-10 z-30 max-w-[70%] truncate rounded-md border border-cc-border bg-cc-surface px-2.5 py-1 text-[11px] text-cc-foreground shadow-lg">
-          {copiedNotice}
+      <div ref={containerRef} className="h-full min-h-0 min-w-0" />
+      {findOpen ? (
+        <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border bg-cc-surface/95 py-1 pl-3 pr-1 shadow-lg">
+          <input
+            ref={findInputRef}
+            className="h-6 w-44 bg-transparent font-mono text-xs text-cc-foreground outline-none placeholder:text-cc-muted"
+            placeholder="Find in terminal"
+            value={findQuery}
+            autoFocus
+            onChange={(event) => {
+              setFindQuery(event.target.value);
+              runFind(event.target.value, "next");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                runFind(findQuery, event.shiftKey ? "previous" : "next");
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeFind();
+              }
+            }}
+          />
+          <button
+            className="flex h-6 w-6 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+            onClick={() => runFind(findQuery, "previous")}
+            title="Previous match (⇧Enter)"
+          >
+            <ArrowUp size={12} />
+          </button>
+          <button
+            className="flex h-6 w-6 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+            onClick={() => runFind(findQuery, "next")}
+            title="Next match (Enter)"
+          >
+            <ArrowDown size={12} />
+          </button>
+          <button
+            className="flex h-6 w-6 items-center justify-center rounded-full text-cc-muted hover:bg-cc-surface-strong hover:text-cc-foreground"
+            onClick={closeFind}
+            title="Close (Esc)"
+          >
+            <X size={12} />
+          </button>
         </div>
       ) : null}
       {(tab.status === "stopped" || tab.status === "error") && !tab.started ? (
@@ -474,7 +556,7 @@ export function TerminalPane({
               className="mt-4 rounded-md bg-cc-accent px-3 py-1.5 text-xs font-medium text-cc-background"
               onClick={() => onStarted(tab.id)}
             >
-              {tab.status === "error" ? "Retry session" : "Start session"}
+              {tab.status === "error" ? "Retry session" : "Resume session"}
             </button>
           </div>
         </div>
@@ -502,7 +584,11 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return window.btoa(binary);
 }
 
-function createSmartLinkProvider(terminal: Terminal, onCopy: (text: string) => void): ILinkProvider {
+function createSmartLinkProvider(
+  terminal: Terminal,
+  onCopy: (text: string) => void,
+  onOpenPath: (text: string) => void,
+): ILinkProvider {
   return {
     provideLinks(bufferLineNumber, callback) {
       const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
@@ -531,7 +617,11 @@ function createSmartLinkProvider(terminal: Terminal, onCopy: (text: string) => v
         activate(event) {
           event.preventDefault();
           event.stopPropagation();
-          onCopy(match.text);
+          if (match.kind === "path" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            onOpenPath(match.text);
+          } else {
+            onCopy(match.text);
+          }
         },
       })));
     },

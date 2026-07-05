@@ -1,5 +1,7 @@
 mod files;
+mod git;
 mod pty;
+mod watch;
 
 use std::{
     env, fs,
@@ -65,6 +67,21 @@ fn read_claude_inventory() -> ClaudeInventory {
 }
 
 #[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .status()
+        .map_err(|error| format!("Could not run open: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Finder could not reveal: {path}"))
+    }
+}
+
+#[tauri::command]
 fn default_session_cwd() -> Result<String, String> {
     let cwd = app_support_dir().join("Sessions").join("scratch");
     fs::create_dir_all(&cwd)
@@ -114,13 +131,13 @@ fn load_dotenv_candidates() {
     let _ = dotenvy::from_path(app_config);
 }
 
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn app_support_dir() -> PathBuf {
+pub(crate) fn app_support_dir() -> PathBuf {
     home_dir()
         .join("Library")
         .join("Application Support")
@@ -230,7 +247,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(pty::PtyRegistry::default())
+        .manage(watch::WatchRegistry::default())
+        .setup(|app| {
+            // Capturing the login shell environment takes a few hundred ms;
+            // warm it before the first session spawn needs it.
+            std::thread::spawn(|| {
+                let _ = pty::login_shell_env();
+            });
+            watch::start_hook_events_watch(&app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pty::spawn_session,
             pty::write_to_session,
@@ -238,17 +266,23 @@ pub fn run() {
             pty::interrupt_session,
             pty::close_session,
             pty::session_active,
-            pty::latest_claude_session_id,
+            pty::session_summary,
             default_session_cwd,
             save_pasted_image,
             read_runtime_config,
             read_claude_inventory,
+            reveal_in_finder,
+            watch::enable_claude_hooks,
+            watch::claude_hooks_status,
+            git::git_changed_files,
+            git::git_diff_file,
             files::list_directory,
             files::read_text_file,
             files::stat_file,
             files::write_text_file,
             files::read_vault_file,
-            files::write_vault_file
+            files::write_vault_file,
+            files::list_files_recursive
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sogo Desktop");

@@ -87,19 +87,32 @@ export const palettes: Record<PaletteName, Palette> = {
   },
 };
 
+export type PalettePreference = PaletteName | "system";
+
 interface ThemeState {
-  paletteName: PaletteName;
+  preference: PalettePreference;
+  systemDark: boolean;
   fontSize: "small" | "medium" | "large";
-  setPaletteName: (paletteName: PaletteName) => void;
+  setPreference: (preference: PalettePreference) => void;
   setFontSize: (fontSize: ThemeState["fontSize"]) => void;
 }
 
+function isPalettePreference(value: string | null): value is PalettePreference {
+  return value === "system" || (!!value && value in palettes);
+}
+
+const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
 export const useThemeStore = create<ThemeState>((set) => ({
-  paletteName: (localStorage.getItem("sogo.palette") as PaletteName | null) ?? "mocha",
+  preference: (() => {
+    const stored = localStorage.getItem("sogo.palette");
+    return isPalettePreference(stored) ? stored : "mocha";
+  })(),
+  systemDark: systemDarkQuery.matches,
   fontSize: (localStorage.getItem("sogo.fontSize") as ThemeState["fontSize"] | null) ?? "medium",
-  setPaletteName: (paletteName) => {
-    localStorage.setItem("sogo.palette", paletteName);
-    set({ paletteName });
+  setPreference: (preference) => {
+    localStorage.setItem("sogo.palette", preference);
+    set({ preference });
   },
   setFontSize: (fontSize) => {
     localStorage.setItem("sogo.fontSize", fontSize);
@@ -107,8 +120,25 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 }));
 
+systemDarkQuery.addEventListener("change", (event) => {
+  useThemeStore.setState({ systemDark: event.matches });
+});
+
+export function resolvePaletteName(preference: PalettePreference, systemDark: boolean): PaletteName {
+  if (preference === "system") return systemDark ? "dark" : "light";
+  return preference;
+}
+
+/** Resolved palette for the current preference, tracking system appearance. */
+export function useResolvedPalette(): Palette {
+  const preference = useThemeStore((state) => state.preference);
+  const systemDark = useThemeStore((state) => state.systemDark);
+  return palettes[resolvePaletteName(preference, systemDark)];
+}
+
 export function applyPalette(palette: Palette) {
   const root = document.documentElement;
+  root.style.colorScheme = palette.name === "light" || palette.name === "latte" ? "light" : "dark";
   root.style.setProperty("--cc-background", palette.background);
   root.style.setProperty("--cc-background-rgb", hexToRgbChannels(palette.background));
   root.style.setProperty("--cc-foreground", palette.foreground);

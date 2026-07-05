@@ -20,6 +20,7 @@ import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import {
   AlertTriangle,
   Check,
+  ChevronsRight,
   Eye,
   Loader2,
   PanelLeftClose,
@@ -43,6 +44,7 @@ interface FileEditorPaneProps {
   onBeginResize: (event: ReactMouseEvent) => void;
   onResetWidth: () => void;
   onToggleLayout: () => void;
+  onHide: () => void;
 }
 
 export function FileEditorPane({
@@ -53,6 +55,7 @@ export function FileEditorPane({
   onBeginResize,
   onResetWidth,
   onToggleLayout,
+  onHide,
 }: FileEditorPaneProps) {
   const session = useEditorStore((state) => state.sessions[sessionId]);
   const {
@@ -76,7 +79,9 @@ export function FileEditorPane({
   if (!session || !activePath) return null;
 
   const requestClose = () => {
-    close(sessionId);
+    if (close(sessionId)) {
+      window.dispatchEvent(new Event("sogo:focus-terminal"));
+    }
   };
 
   return (
@@ -98,7 +103,9 @@ export function FileEditorPane({
         onDoubleClick={onResetWidth}
         title="Resize editor"
         aria-label="Resize editor"
-      />
+      >
+        <div className="mx-auto h-full w-[3px] rounded-full bg-cc-accent/0 transition-colors duration-150 group-hover/resize:bg-cc-accent/35" />
+      </div>
       <div
         className="h-3 w-full shrink-0 cursor-grab"
         data-tauri-drag-region
@@ -111,6 +118,9 @@ export function FileEditorPane({
       >
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-cc-foreground">{basename(activePath)}</span>
+          {dirty ? (
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" title="Unsaved changes" />
+          ) : null}
           {displayPath && displayPath !== basename(activePath) ? (
             <span className="min-w-0 truncate font-mono text-[10.5px] text-cc-muted/60">{displayPath}</span>
           ) : null}
@@ -125,6 +135,9 @@ export function FileEditorPane({
             onClick={onToggleLayout}
           >
             {layout === "ejected" ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+          </IconButton>
+          <IconButton label="Hide editor (keeps the file open)" onClick={onHide}>
+            <ChevronsRight size={13} />
           </IconButton>
           <IconButton
             label="Revert"

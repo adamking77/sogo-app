@@ -3,13 +3,18 @@ import { persist } from "zustand/middleware";
 
 import type { SogoTab } from "@/types";
 
+const MAX_RECENT_FOLDERS = 8;
+
 interface SessionState {
   tabs: SogoTab[];
   activeTabId?: string;
+  recentFolders: string[];
   addTab: (cwd: string, options?: { label?: string; folderChosen?: boolean }) => SogoTab;
   closeTab: (id: string) => void;
   setActiveTabId: (id?: string) => void;
   updateTab: (id: string, patch: Partial<SogoTab>) => void;
+  moveTab: (fromIndex: number, toIndex: number) => void;
+  rememberFolder: (cwd: string) => void;
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -17,6 +22,7 @@ export const useSessionStore = create<SessionState>()(
     (set) => ({
       tabs: [],
       activeTabId: undefined,
+      recentFolders: [],
       addTab: (cwd, options) => {
         const cwdParts = cwd.split("/").filter(Boolean);
         const fallbackLabel = options?.folderChosen === false
@@ -35,9 +41,14 @@ export const useSessionStore = create<SessionState>()(
             folderChosen: options?.folderChosen ?? true,
           };
 
+          const recentFolders = nextTab.folderChosen
+            ? pushRecent(state.recentFolders, cwd)
+            : state.recentFolders;
+
           return {
             tabs: [...state.tabs, nextTab],
             activeTabId: nextTab.id,
+            recentFolders,
           };
         });
 
@@ -58,6 +69,26 @@ export const useSessionStore = create<SessionState>()(
           tabs: state.tabs.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab)),
         }));
       },
+      moveTab: (fromIndex, toIndex) => {
+        set((state) => {
+          if (
+            fromIndex === toIndex
+            || fromIndex < 0
+            || toIndex < 0
+            || fromIndex >= state.tabs.length
+            || toIndex >= state.tabs.length
+          ) {
+            return {};
+          }
+          const tabs = [...state.tabs];
+          const [moved] = tabs.splice(fromIndex, 1);
+          tabs.splice(toIndex, 0, moved);
+          return { tabs };
+        });
+      },
+      rememberFolder: (cwd) => {
+        set((state) => ({ recentFolders: pushRecent(state.recentFolders, cwd) }));
+      },
     }),
     {
       name: "sogo.sessions",
@@ -68,7 +99,12 @@ export const useSessionStore = create<SessionState>()(
           started: false,
         })),
         activeTabId: state.activeTabId,
+        recentFolders: state.recentFolders,
       }),
     },
   ),
 );
+
+function pushRecent(recentFolders: string[], cwd: string) {
+  return [cwd, ...recentFolders.filter((folder) => folder !== cwd)].slice(0, MAX_RECENT_FOLDERS);
+}
