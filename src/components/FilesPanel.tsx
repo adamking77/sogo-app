@@ -20,7 +20,7 @@ interface FilesPanelProps {
 
 type LoadedMap = Record<string, FileEntry[]>;
 type LoadingSet = Set<string>;
-type FileActionMenu = { x: number; y: number; entry: FileEntry; source: "context" | "hover" } | null;
+type FileContextMenu = { x: number; y: number; entry: FileEntry } | null;
 const ACTION_MENU_WIDTH = 212;
 
 export function FilesPanel({
@@ -36,9 +36,8 @@ export function FilesPanel({
   const [loading, setLoading] = useState<LoadingSet>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
-  const [actionMenu, setActionMenu] = useState<FileActionMenu>(null);
+  const [contextMenu, setContextMenu] = useState<FileContextMenu>(null);
   const loadedRef = useRef(loaded);
-  const hoverCloseTimerRef = useRef<number | null>(null);
   loadedRef.current = loaded;
 
   const loadDir = useCallback(async (path?: string) => {
@@ -124,36 +123,9 @@ export function FilesPanel({
     }
   }, [cwd]);
 
-  const clearHoverCloseTimer = useCallback(() => {
-    if (hoverCloseTimerRef.current !== null) {
-      window.clearTimeout(hoverCloseTimerRef.current);
-      hoverCloseTimerRef.current = null;
-    }
-  }, []);
-
-  const openActionMenu = useCallback((menu: NonNullable<FileActionMenu>) => {
-    clearHoverCloseTimer();
-    setActionMenu(menu);
-  }, [clearHoverCloseTimer]);
-
-  const scheduleHoverMenuClose = useCallback(() => {
-    clearHoverCloseTimer();
-    hoverCloseTimerRef.current = window.setTimeout(() => {
-      setActionMenu((current) => current?.source === "hover" ? null : current);
-      hoverCloseTimerRef.current = null;
-    }, 180);
-  }, [clearHoverCloseTimer]);
-
   useEffect(() => {
-    return () => clearHoverCloseTimer();
-  }, [clearHoverCloseTimer]);
-
-  useEffect(() => {
-    if (!actionMenu) return;
-    const close = () => {
-      clearHoverCloseTimer();
-      setActionMenu(null);
-    };
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
@@ -163,7 +135,7 @@ export function FilesPanel({
       window.removeEventListener("pointerdown", close);
       window.removeEventListener("keydown", onKey);
     };
-  }, [actionMenu, clearHoverCloseTimer]);
+  }, [contextMenu]);
 
   if (!folderChosen) {
     return (
@@ -202,28 +174,21 @@ export function FilesPanel({
             onOpenExternal={openExternal}
             onRevealPath={revealPath}
             onCopyPath={copyPath}
-            onOpenActionMenu={openActionMenu}
-            onScheduleHoverMenuClose={scheduleHoverMenuClose}
+            onOpenContextMenu={setContextMenu}
           />
         ) : null}
       </div>
-      {actionMenu ? (
+      {contextMenu ? (
         <FileActionsMenu
-          entry={actionMenu.entry}
+          entry={contextMenu.entry}
           cwd={cwd}
-          x={actionMenu.x}
-          y={actionMenu.y}
-          source={actionMenu.source}
+          x={contextMenu.x}
+          y={contextMenu.y}
           onOpenFile={onOpenFile}
           onOpenExternal={openExternal}
           onRevealPath={revealPath}
           onCopyPath={copyPath}
-          onClose={() => {
-            clearHoverCloseTimer();
-            setActionMenu(null);
-          }}
-          onKeepOpen={clearHoverCloseTimer}
-          onScheduleClose={scheduleHoverMenuClose}
+          onClose={() => setContextMenu(null)}
         />
       ) : null}
     </section>
@@ -259,8 +224,7 @@ function TreeLevel({
   onOpenExternal,
   onRevealPath,
   onCopyPath,
-  onOpenActionMenu,
-  onScheduleHoverMenuClose,
+  onOpenContextMenu,
 }: {
   entries: FileEntry[];
   parentPath: string;
@@ -275,8 +239,7 @@ function TreeLevel({
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
-  onOpenActionMenu: (menu: NonNullable<FileActionMenu>) => void;
-  onScheduleHoverMenuClose: () => void;
+  onOpenContextMenu: (menu: FileContextMenu) => void;
 }) {
   if (loading.has(parentPath) && entries.length === 0) {
     return (
@@ -303,8 +266,7 @@ function TreeLevel({
           onOpenExternal={onOpenExternal}
           onRevealPath={onRevealPath}
           onCopyPath={onCopyPath}
-          onOpenActionMenu={onOpenActionMenu}
-          onScheduleHoverMenuClose={onScheduleHoverMenuClose}
+          onOpenContextMenu={onOpenContextMenu}
         />
       ))}
     </>
@@ -324,8 +286,7 @@ function TreeRow({
   onOpenExternal,
   onRevealPath,
   onCopyPath,
-  onOpenActionMenu,
-  onScheduleHoverMenuClose,
+  onOpenContextMenu,
 }: {
   entry: FileEntry;
   depth: number;
@@ -339,36 +300,23 @@ function TreeRow({
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
-  onOpenActionMenu: (menu: NonNullable<FileActionMenu>) => void;
-  onScheduleHoverMenuClose: () => void;
+  onOpenContextMenu: (menu: FileContextMenu) => void;
 }) {
   const isExpanded = expanded.has(entry.path);
   const children = loaded[entry.path];
   const isActive = !entry.isDir && activePath === entry.path;
   const changed = !entry.isDir && changedPaths.size > 0 && isChanged(entry.path, changedPaths);
-  const openHoverMenu = (target: HTMLElement) => {
-    const rect = target.getBoundingClientRect();
-    const height = actionMenuHeight(entry.isDir);
-    const rightSideX = rect.right + 6;
-    const x = rightSideX + ACTION_MENU_WIDTH < window.innerWidth
-      ? rightSideX
-      : Math.max(8, rect.left - ACTION_MENU_WIDTH - 6);
-    const y = Math.min(Math.max(8, rect.top - 4), Math.max(8, window.innerHeight - height - 8));
-    onOpenActionMenu({ x, y, entry, source: "hover" });
-  };
 
   return (
     <div>
       <div
         role="button"
         tabIndex={0}
-        className={`flex w-full items-center gap-1.5 py-[3px] pr-2 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
+        className={`group/file-row flex w-full items-center gap-1.5 py-[3px] pr-2 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
           isActive ? "bg-cc-surface-strong" : ""
         }`}
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => { if (entry.isDir) onToggle(entry.path); else onOpenFile(entry.path); }}
-        onMouseEnter={(event) => openHoverMenu(event.currentTarget)}
-        onMouseLeave={onScheduleHoverMenuClose}
         onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
@@ -377,7 +325,7 @@ function TreeRow({
         }}
         onContextMenu={(event) => {
           event.preventDefault();
-          onOpenActionMenu({ x: event.clientX, y: event.clientY, entry, source: "context" });
+          onOpenContextMenu({ x: event.clientX, y: event.clientY, entry });
         }}
         title={entry.path}
       >
@@ -395,6 +343,13 @@ function TreeRow({
         {changed ? (
           <span className="mr-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/80" title="Modified (git)" />
         ) : null}
+        {!entry.isDir ? (
+          <span className="ml-auto hidden shrink-0 items-center gap-1 text-[10.5px] group-hover/file-row:flex group-focus-within/file-row:flex">
+            <InlineAction label="Open" onClick={() => onOpenFile(entry.path)} />
+            <InlineAction label="Default" onClick={() => onOpenExternal(entry.path)} />
+            <InlineAction label="Finder" onClick={() => onRevealPath(entry.path)} />
+          </span>
+        ) : null}
       </div>
       {entry.isDir && isExpanded ? (
         <TreeLevel
@@ -411,8 +366,7 @@ function TreeRow({
           onOpenExternal={onOpenExternal}
           onRevealPath={onRevealPath}
           onCopyPath={onCopyPath}
-          onOpenActionMenu={onOpenActionMenu}
-          onScheduleHoverMenuClose={onScheduleHoverMenuClose}
+          onOpenContextMenu={onOpenContextMenu}
         />
       ) : null}
     </div>
@@ -424,27 +378,21 @@ function FileActionsMenu({
   cwd,
   x,
   y,
-  source,
   onOpenFile,
   onOpenExternal,
   onRevealPath,
   onCopyPath,
   onClose,
-  onKeepOpen,
-  onScheduleClose,
 }: {
   entry: FileEntry;
   cwd: string;
   x: number;
   y: number;
-  source: "context" | "hover";
   onOpenFile: (path: string) => void;
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
   onClose: () => void;
-  onKeepOpen: () => void;
-  onScheduleClose: () => void;
 }) {
   const position = clampActionMenuPosition(x, y, entry.isDir);
 
@@ -453,10 +401,6 @@ function FileActionsMenu({
       className="sogo-pop fixed z-[70] w-[212px] rounded-xl border border-cc-border bg-cc-surface/95 p-1 shadow-2xl"
       style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
-      onMouseEnter={onKeepOpen}
-      onMouseLeave={() => {
-        if (source === "hover") onScheduleClose();
-      }}
     >
       {!entry.isDir ? (
         <ContextItem
@@ -501,6 +445,21 @@ function FileActionsMenu({
       </div>
     </div>,
     document.body,
+  );
+}
+
+function InlineAction({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      className="rounded px-1.5 py-0.5 text-cc-muted transition-colors hover:bg-cc-background/50 hover:text-cc-foreground"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
