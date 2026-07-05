@@ -18,6 +18,25 @@ use tauri::{Emitter, Manager};
 /// ExitRequested handler lets the app terminate.
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
+const QUIT_MENU_ID: &str = "sogo-quit";
+
+/// Quit entry point for our custom ⌘Q menu item: exit immediately when no
+/// Claude session is running, otherwise surface the in-app confirm dialog.
+fn request_quit(app: &tauri::AppHandle) {
+    let has_sessions = app.state::<pty::PtyRegistry>().has_active_sessions();
+    if !has_sessions {
+        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+        app.exit(0);
+        return;
+    }
+
+    let _ = app.emit("sogo://exit-requested", ());
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeConfig {
@@ -263,7 +282,22 @@ pub fn run() {
                 let _ = pty::login_shell_env();
             });
             watch::start_hook_events_watch(&app.handle().clone());
+            app.set_menu(build_app_menu(app.handle())?)?;
             Ok(())
+        })
+        // A window close request (native menu, AppleScript, anything) must
+        // never destroy the window — hide it instead. Quitting goes through
+        // ExitRequested + confirm_quit below.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_MENU_ID {
+                request_quit(app);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             pty::spawn_session,
@@ -328,6 +362,73 @@ pub fn run() {
 fn confirm_quit(app: tauri::AppHandle) {
     QUIT_CONFIRMED.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// The default Tauri menu binds ⌘W to a native "Close Window" item in two
+/// submenus. When the webview doesn't consume ⌘W the accelerator closes the
+/// real window. This menu is the default minus every close_window item (and
+/// the File submenu that only held one); Edit keeps the clipboard bindings.
+fn build_app_menu(
+    handle: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
+
+    let pkg_info = handle.package_info();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        ..Default::default()
+    };
+
+    // PredefinedMenuItem::quit sends NSApp `terminate:`, which tao cannot
+    // intercept (no applicationShouldTerminate handler) — it would bypass the
+    // quit confirm entirely. Use a custom item routed through on_menu_event.
+    let quit_item = tauri::menu::MenuItemBuilder::with_id(QUIT_MENU_ID, format!("Quit {}", pkg_info.name))
+        .accelerator("CmdOrCtrl+Q")
+        .build(handle)?;
+
+    let app_menu = Submenu::with_items(
+        handle,
+        pkg_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, Some(about_metadata))?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::services(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, None)?,
+            &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &quit_item,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+
+    let window_menu = Submenu::with_items(
+        handle,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(handle, None)?,
+            &PredefinedMenuItem::maximize(handle, None)?,
+        ],
+    )?;
+
+    Menu::with_items(handle, &[&app_menu, &edit_menu, &window_menu])
 }
 
 #[cfg(test)]

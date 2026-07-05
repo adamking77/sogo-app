@@ -549,7 +549,10 @@ export function TerminalPane({
         </div>
       ) : null}
       {(tab.status === "stopped" || tab.status === "error") && !tab.started ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-cc-background/90">
+        // z-30 keeps this above xterm's link-layer canvas, which carries a
+        // positive z-index and would otherwise swallow clicks while staying
+        // visually transparent.
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-cc-background/90">
           <div className="max-w-sm text-center">
             <div className="text-sm font-medium">{tab.label}</div>
             <div className="mt-1 text-xs text-cc-muted">{tab.cwd}</div>
