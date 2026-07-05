@@ -23,10 +23,12 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+uuid = { version = "1", features = ["v4"] }
 
+# panic = "abort" is deliberately NOT set: with abort, a panic on any worker
+# thread (PTY readers, watchers) would kill the whole app instantly.
 [profile.release]
 codegen-units = 1
 lto = "thin"
 opt-level = 3
-panic = "abort"
 strip = true

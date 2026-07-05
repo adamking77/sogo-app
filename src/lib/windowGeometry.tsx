@@ -24,6 +24,9 @@ export const FILE_EDITOR_MAX_WIDTH = 1080;
 export const FILE_EDITOR_DEFAULT_WIDTH = 760;
 export const PANE_GAP = 8;
 export const RIGHT_SIDEBAR_WIDTH = 336;
+/** Floating bottom control rail row (its own flex row + gap). */
+export const CONTROL_RAIL_HEIGHT = 38;
+export const CONTROL_RAIL_TOTAL = CONTROL_RAIL_HEIGHT + PANE_GAP;
 export const PANEL_WINDOW_MIN_WIDTH = TERMINAL_ONLY_WINDOW_MIN_WIDTH + RIGHT_SIDEBAR_WIDTH + PANE_GAP;
 export const EDITOR_WINDOW_MIN_WIDTH = 840;
 export const EDITOR_PANEL_WINDOW_MIN_WIDTH =
@@ -35,15 +38,19 @@ export function getWindowMinWidth(
   panelOpen: boolean,
   fileEditorLayout: FileEditorLayout,
 ) {
-  if (editorVisible && fileEditorLayout === "ejected") {
-    const panelWidth = panelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
-    const gapCount = panelOpen ? 2 : 1;
-    return TERMINAL_EJECTED_MIN_WIDTH + FILE_EDITOR_MIN_WIDTH + panelWidth + PANE_GAP * gapCount;
-  }
-  if (editorVisible && panelOpen) return EDITOR_PANEL_WINDOW_MIN_WIDTH;
-  if (editorVisible) return EDITOR_WINDOW_MIN_WIDTH;
-  if (panelOpen) return PANEL_WINDOW_MIN_WIDTH;
-  return TERMINAL_ONLY_WINDOW_MIN_WIDTH;
+  const base = (() => {
+    if (editorVisible && fileEditorLayout === "ejected") {
+      const panelWidth = panelOpen ? RIGHT_SIDEBAR_WIDTH : 0;
+      const gapCount = panelOpen ? 2 : 1;
+      return TERMINAL_EJECTED_MIN_WIDTH + FILE_EDITOR_MIN_WIDTH + panelWidth + PANE_GAP * gapCount;
+    }
+    if (editorVisible && panelOpen) return EDITOR_PANEL_WINDOW_MIN_WIDTH;
+    if (editorVisible) return EDITOR_WINDOW_MIN_WIDTH;
+    if (panelOpen) return PANEL_WINDOW_MIN_WIDTH;
+    return TERMINAL_ONLY_WINDOW_MIN_WIDTH;
+  })();
+
+  return base;
 }
 
 export function readStoredNumber(key: string, fallback: number) {

@@ -3404,6 +3404,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
+ "uuid",
 ]
 
 [[package]]

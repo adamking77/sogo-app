@@ -39,6 +39,8 @@ pub struct SpawnRequest {
     cwd: String,
     cols: u16,
     rows: u16,
+    /// Claude session ID from a previous run of this tab, when known.
+    claude_session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,13 +119,21 @@ pub fn spawn_session(
         shutdown_session(session, false);
     }
 
-    let session_file = claude_project_dir(&canonical_cwd.to_string_lossy())
-        .join(format!("{}.jsonl", request.session_id));
-    let resumed = session_file.is_file();
+    // Resolve which Claude session ID to use. A transcript (.jsonl) means we
+    // can resume. An aux directory without a transcript means the ID is
+    // already registered with Claude but has nothing to resume — reusing it
+    // via --session-id makes Claude exit immediately, so mint a fresh ID.
+    let requested_claude_id = request
+        .claude_session_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| request.session_id.clone());
+    let project_dir = claude_project_dir(&canonical_cwd.to_string_lossy());
+    let (claude_session_id, resumed) = resolve_claude_session(&project_dir, &requested_claude_id);
 
     eprintln!(
-        "[sogo timing] {} spawn_session start cwd={} resumed={}",
-        request.session_id, request.cwd, resumed
+        "[sogo timing] {} spawn_session start cwd={} claude_id={} resumed={}",
+        request.session_id, request.cwd, claude_session_id, resumed
     );
 
     let pty_system = native_pty_system();
@@ -150,7 +160,7 @@ pub fn spawn_session(
     } else {
         command.arg("--session-id");
     }
-    command.arg(&request.session_id);
+    command.arg(&claude_session_id);
 
     let child = pair
         .slave
@@ -256,7 +266,7 @@ pub fn spawn_session(
     Ok(SessionInfo {
         session_id: request.session_id.clone(),
         cwd: canonical_cwd.to_string_lossy().to_string(),
-        claude_session_id: request.session_id,
+        claude_session_id,
         resumed,
     })
 }
@@ -390,6 +400,14 @@ pub fn session_active(
 }
 
 impl PtyRegistry {
+    /// True when any Claude session process is still tracked.
+    pub fn has_active_sessions(&self) -> bool {
+        self.sessions
+            .lock()
+            .map(|sessions| !sessions.is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn workspace_root(&self, session_id: &str) -> Result<PathBuf, String> {
         self.roots
             .lock()
@@ -565,8 +583,30 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
+/// Decide which Claude session ID to launch with and whether to resume.
+///
+/// A transcript (`<id>.jsonl`) means the conversation is resumable. An aux
+/// directory (`<id>/`) without a transcript means the ID is registered with
+/// Claude but there is nothing to resume — reusing it via `--session-id`
+/// makes Claude exit immediately, so mint a fresh ID instead.
+fn resolve_claude_session(project_dir: &Path, requested: &str) -> (String, bool) {
+    let transcript = project_dir.join(format!("{requested}.jsonl"));
+    if transcript.is_file() {
+        return (requested.to_string(), true);
+    }
+    if project_dir.join(requested).exists() {
+        return (uuid::Uuid::new_v4().to_string(), false);
+    }
+    (requested.to_string(), false)
+}
+
 fn claude_project_dir(cwd: &str) -> PathBuf {
-    let encoded = cwd.replace('/', "-");
+    // Claude Code encodes every non-alphanumeric character as '-' (slashes,
+    // dots, AND spaces — e.g. "Application Support" → "Application-Support").
+    let encoded: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
@@ -584,7 +624,43 @@ mod tests {
     fn claude_project_dir_encodes_absolute_cwd() {
         let project_dir = claude_project_dir("/Users/adam/project one");
 
-        assert!(project_dir.ends_with(PathBuf::from(".claude/projects/-Users-adam-project one")));
+        assert!(project_dir.ends_with(PathBuf::from(".claude/projects/-Users-adam-project-one")));
+    }
+
+    #[test]
+    fn resolve_claude_session_resumes_when_transcript_exists() {
+        let dir = unique_temp_dir("resolve-resume");
+        fs::write(dir.join("abc.jsonl"), "{}").unwrap();
+
+        let (id, resumed) = resolve_claude_session(&dir, "abc");
+
+        assert_eq!(id, "abc");
+        assert!(resumed);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_claude_session_mints_fresh_id_when_only_aux_dir_exists() {
+        let dir = unique_temp_dir("resolve-burned");
+        fs::create_dir_all(dir.join("abc")).unwrap();
+
+        let (id, resumed) = resolve_claude_session(&dir, "abc");
+
+        assert_ne!(id, "abc");
+        assert!(!resumed);
+        assert_eq!(id.len(), 36, "fresh id should be a uuid");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_claude_session_keeps_id_when_unused() {
+        let dir = unique_temp_dir("resolve-new");
+
+        let (id, resumed) = resolve_claude_session(&dir, "abc");
+
+        assert_eq!(id, "abc");
+        assert!(!resumed);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -6,11 +6,17 @@ mod watch;
 use std::{
     env, fs,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
     time::SystemTime,
 };
 
 use base64::Engine;
 use serde::Serialize;
+use tauri::{Emitter, Manager};
+
+/// Set once the user confirms quitting through the in-app dialog, so the
+/// ExitRequested handler lets the app terminate.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +278,7 @@ pub fn run() {
             read_runtime_config,
             read_claude_inventory,
             reveal_in_finder,
+            confirm_quit,
             watch::enable_claude_hooks,
             watch::claude_hooks_status,
             git::git_changed_files,
@@ -284,8 +291,43 @@ pub fn run() {
             files::write_vault_file,
             files::list_files_recursive
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Sogo Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Sogo Desktop")
+        .run(|app_handle, event| match event {
+            // ⌘Q / last-window-close land here. With running Claude sessions,
+            // block the exit and let the frontend show the quit confirm; the
+            // confirm_quit command flips QUIT_CONFIRMED and exits for real.
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() && !QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    let has_sessions = app_handle
+                        .state::<pty::PtyRegistry>()
+                        .has_active_sessions();
+                    if has_sessions {
+                        api.prevent_exit();
+                        let _ = app_handle.emit("sogo://exit-requested", ());
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
+            }
+            // Dock icon clicked while the window is hidden — bring it back.
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
+        });
+}
+
+#[tauri::command]
+fn confirm_quit(app: tauri::AppHandle) {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 #[cfg(test)]

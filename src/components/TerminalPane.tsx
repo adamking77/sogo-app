@@ -465,6 +465,7 @@ export function TerminalPane({
           cwd: tab.cwd,
           cols: dimensions?.cols ?? 100,
           rows: dimensions?.rows ?? 30,
+          claudeSessionId: tab.claudeSessionId ?? null,
         },
       });
       timingRef.current.spawnResolved = performance.now();

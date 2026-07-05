@@ -7,7 +7,7 @@ import { CommandPalette, type PaletteCommand, type PaletteMode } from "@/compone
 import { DiffPane } from "@/components/DiffPane";
 import { FileEditorPane } from "@/components/FileEditorPane";
 import { FilesPanel } from "@/components/FilesPanel";
-import { PillBar, statusDotClass, statusLabel, type PanelName } from "@/components/PillBar";
+import { ControlRail, StatusStrip, statusDotClass, type PanelName } from "@/components/PillBar";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { TabStrip } from "@/components/TabStrip";
 import { TerminalPane } from "@/components/TerminalPane";
@@ -510,7 +510,9 @@ function App() {
         if (cancelled) return;
         const { sessionId, event: hookEvent, message } = event.payload;
         const state = useSessionStore.getState();
-        const tab = state.tabs.find((candidate) => candidate.id === sessionId);
+        const tab = state.tabs.find(
+          (candidate) => candidate.claudeSessionId === sessionId || candidate.id === sessionId,
+        );
         if (!tab) return;
 
         if (hookEvent === "Notification") {
@@ -565,24 +567,18 @@ function App() {
     };
   }, [tauriRuntime]);
 
-  // Quit confirm: intercept window close while sessions are running.
-  const quitConfirmRef = useRef(false);
+  // Quit confirm: the Rust side blocks ⌘Q / app exit while Claude sessions
+  // are running and asks us to confirm.
   useEffect(() => {
     if (!tauriRuntime) return;
 
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
-    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
       if (cancelled) return;
-      unlisten = await getCurrentWindow().onCloseRequested((event) => {
-        const running = useSessionStore.getState().tabs.some(
-          (tab) => tab.started && tab.status !== "stopped" && tab.status !== "error",
-        );
-        if (running && !quitConfirmRef.current) {
-          event.preventDefault();
-          setQuitConfirm(true);
-        }
+      unlisten = await listen("sogo://exit-requested", () => {
+        if (!cancelled) setQuitConfirm(true);
       });
     }).catch(() => undefined);
 
@@ -593,9 +589,8 @@ function App() {
   }, [tauriRuntime]);
 
   const confirmQuit = useCallback(() => {
-    quitConfirmRef.current = true;
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-      void getCurrentWindow().destroy();
+    void import("@tauri-apps/api/core").then(({ invoke }) => {
+      void invoke("confirm_quit");
     });
   }, []);
 
@@ -612,7 +607,7 @@ function App() {
       if (tab.folderChosen || tab.customLabel || !tab.started) continue;
 
       void import("@tauri-apps/api/core").then(({ invoke }) => {
-        void invoke<string | null>("session_summary", { cwd: tab.cwd, sessionId: tab.id })
+        void invoke<string | null>("session_summary", { cwd: tab.cwd, sessionId: tab.claudeSessionId ?? tab.id })
           .then((summary) => {
             if (!summary) return;
             const label = summary.length > 32 ? `${summary.slice(0, 31)}…` : summary;
@@ -635,8 +630,9 @@ function App() {
       }
       void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
         const appWindow = getCurrentWindow();
-        if (action === "close") return appWindow.close();
-        if (action === "hide") return appWindow.hide();
+        // Red light hides instead of quitting — sessions keep running and the
+        // Dock icon or ⌥Space brings the window back. Quit via ⌘Q.
+        if (action === "close" || action === "hide") return appWindow.hide();
         return appWindow.minimize();
       });
     },
@@ -858,9 +854,10 @@ function App() {
   }, [activePanel, pinned, tabsCollapsed, stoppedTabs.length, tauriRuntime, toggleSidebar, toggleTabs, resumeAll, setPreference]);
 
   return (
-    <div className="relative flex h-full w-full gap-2 bg-transparent text-cc-foreground">
+    <div className="relative flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
+      <div className="flex min-h-0 w-full flex-1 gap-2">
       <div
-        className={`relative flex h-full min-h-[540px] min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95 ${
+        className={`relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95 ${
           ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
         }`}
         style={{
@@ -957,33 +954,20 @@ function App() {
                 </>
               )}
             </div>
-            {!compact ? (
-              <PillBar
-                tab={activeTab}
-                activePanel={activePanel}
-                pinned={pinned}
-                tabsCollapsed={tabsCollapsed}
-                stoppedCount={stoppedTabs.length}
-                confirmingClose={!!activeTab && confirmingCloseTabId === activeTab.id}
-                editorChip={editorChip}
-                onRequestClose={() => activeTab && requestCloseTab(activeTab.id)}
-                onConfirmClose={confirmCloseTab}
-                onCancelClose={cancelCloseConfirm}
-                onStop={stopActiveTab}
-                onNewTab={() => void newTab()}
-                onNewFolderTab={() => void newFolderTab()}
-                onTogglePanel={togglePanel}
-                onTogglePin={() => setPinned((current) => !current)}
-                onToggleTabs={toggleTabs}
-                onResumeAll={resumeAll}
-                onShowEditor={() => {
-                  if (!activeTab) return;
-                  closeDiff();
-                  showEditorWindow(activeTab.id);
-                }}
-                onOpenPalette={() => openPalette("all")}
-              />
-            ) : null}
+            <StatusStrip
+              tab={activeTab}
+              confirmingClose={!!activeTab && confirmingCloseTabId === activeTab.id}
+              editorChip={editorChip}
+              stoppedCount={stoppedTabs.length}
+              onConfirmClose={confirmCloseTab}
+              onCancelClose={cancelCloseConfirm}
+              onShowEditor={() => {
+                if (!activeTab) return;
+                closeDiff();
+                showEditorWindow(activeTab.id);
+              }}
+              onResumeAll={resumeAll}
+            />
           </section>
           {activeTab && editorVisible && !ejectedEditorActive ? (
             <div
@@ -1064,16 +1048,6 @@ function App() {
           />
         ) : null}
 
-        {compact && activeTab ? (
-          <button
-            className="absolute bottom-3 right-3 z-40 flex h-7 items-center gap-1.5 rounded-full border border-cc-border bg-cc-surface/90 px-2.5 text-[10.5px] text-cc-muted shadow-lg transition-colors hover:text-cc-foreground"
-            onClick={() => openPalette("all")}
-            title="Command palette (⌘K)"
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass(activeTab.status)}`} />
-            {statusLabel(activeTab.status)}
-          </button>
-        ) : null}
       </div>
 
       {activeTab && editorVisible && ejectedEditorActive ? (
@@ -1148,6 +1122,28 @@ function App() {
           )}
         </PanelWindow>
       ) : null}
+      </div>
+
+      {!compact ? (
+        <div className="flex shrink-0 justify-center">
+          <ControlRail
+            activePanel={activePanel}
+            pinned={pinned}
+            tabsCollapsed={tabsCollapsed}
+            running={sessionRunning}
+            confirmingClose={!!activeTab && confirmingCloseTabId === activeTab.id}
+            hasTab={!!activeTab}
+            onStop={stopActiveTab}
+            onRequestClose={() => activeTab && requestCloseTab(activeTab.id)}
+            onNewTab={() => void newTab()}
+            onNewFolderTab={() => void newFolderTab()}
+            onTogglePanel={togglePanel}
+            onTogglePin={() => setPinned((current) => !current)}
+            onToggleTabs={toggleTabs}
+            onOpenPalette={() => openPalette("all")}
+          />
+        </div>
+      ) : null}
 
       {/* Window-resize handles on the outer shell so they track the real window
           frame. In ejected mode the long left/right edges belong to the column
@@ -1194,8 +1190,8 @@ function TrafficLights({
     <div className="group/lights flex shrink-0 items-center gap-2 pl-3.5 pr-2">
       <button
         type="button"
-        aria-label="Close window"
-        title="Close"
+        aria-label="Hide window"
+        title="Hide (⌘Q quits)"
         onClick={handle(onClose)}
         onMouseDown={(event) => event.stopPropagation()}
         className={lightClass("bg-[#ff5f57]", "text-[#4d0000]")}
