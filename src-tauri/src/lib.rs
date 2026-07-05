@@ -143,6 +143,20 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_path_in_default_app(path: String) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .arg(&path)
+        .status()
+        .map_err(|error| format!("Could not run open: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Default app could not open: {path}"))
+    }
+}
+
+#[tauri::command]
 fn default_session_cwd() -> Result<String, String> {
     let cwd = app_support_dir().join("Sessions").join("scratch");
     fs::create_dir_all(&cwd)
@@ -353,6 +367,7 @@ pub fn run() {
             read_runtime_config,
             read_claude_inventory,
             reveal_in_finder,
+            open_path_in_default_app,
             confirm_quit,
             watch::enable_claude_hooks,
             watch::claude_hooks_status,

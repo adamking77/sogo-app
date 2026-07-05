@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight, Copy, ExternalLink, FileText, FolderSearch, MoreHorizontal } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
+import { toastError, toastSuccess } from "@/stores/toastStore";
 import type { FileEntry } from "@/types";
 
 interface FilesPanelProps {
@@ -18,6 +19,7 @@ interface FilesPanelProps {
 
 type LoadedMap = Record<string, FileEntry[]>;
 type LoadingSet = Set<string>;
+type FileContextMenu = { x: number; y: number; entry: FileEntry } | null;
 
 export function FilesPanel({
   sessionId,
@@ -32,6 +34,7 @@ export function FilesPanel({
   const [loading, setLoading] = useState<LoadingSet>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<FileContextMenu>(null);
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
 
@@ -88,6 +91,50 @@ export function FilesPanel({
     [loadDir],
   );
 
+  const revealPath = useCallback(async (path: string) => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("reveal_in_finder", { path });
+    } catch (err) {
+      toastError(String(err));
+    }
+  }, []);
+
+  const openExternal = useCallback(async (path: string) => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_path_in_default_app", { path });
+    } catch (err) {
+      toastError(String(err));
+    }
+  }, []);
+
+  const copyPath = useCallback(async (path: string, variant: "absolute" | "relative") => {
+    const text = variant === "relative" ? relativePath(cwd, path) : path;
+    try {
+      await navigator.clipboard?.writeText(text);
+      toastSuccess(variant === "relative" ? "Copied relative path" : "Copied full path");
+    } catch (err) {
+      toastError(`Could not copy path: ${String(err)}`);
+    }
+  }, [cwd]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [contextMenu]);
+
   if (!folderChosen) {
     return (
       <section className="flex min-h-0 flex-1 flex-col items-center justify-center bg-cc-surface p-6 text-center">
@@ -122,9 +169,26 @@ export function FilesPanel({
             changedPaths={changedPaths}
             onToggle={toggle}
             onOpenFile={onOpenFile}
+            onOpenExternal={openExternal}
+            onRevealPath={revealPath}
+            onCopyPath={copyPath}
+            onContextMenu={setContextMenu}
           />
         ) : null}
       </div>
+      {contextMenu ? (
+        <FileActionsMenu
+          entry={contextMenu.entry}
+          cwd={cwd}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onOpenFile={onOpenFile}
+          onOpenExternal={openExternal}
+          onRevealPath={revealPath}
+          onCopyPath={copyPath}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -155,6 +219,10 @@ function TreeLevel({
   changedPaths,
   onToggle,
   onOpenFile,
+  onOpenExternal,
+  onRevealPath,
+  onCopyPath,
+  onContextMenu,
 }: {
   entries: FileEntry[];
   parentPath: string;
@@ -166,6 +234,10 @@ function TreeLevel({
   changedPaths: Set<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onOpenExternal: (path: string) => void;
+  onRevealPath: (path: string) => void;
+  onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  onContextMenu: (menu: FileContextMenu) => void;
 }) {
   if (loading.has(parentPath) && entries.length === 0) {
     return (
@@ -189,6 +261,10 @@ function TreeLevel({
           changedPaths={changedPaths}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
+          onOpenExternal={onOpenExternal}
+          onRevealPath={onRevealPath}
+          onCopyPath={onCopyPath}
+          onContextMenu={onContextMenu}
         />
       ))}
     </>
@@ -205,6 +281,10 @@ function TreeRow({
   changedPaths,
   onToggle,
   onOpenFile,
+  onOpenExternal,
+  onRevealPath,
+  onCopyPath,
+  onContextMenu,
 }: {
   entry: FileEntry;
   depth: number;
@@ -215,6 +295,10 @@ function TreeRow({
   changedPaths: Set<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onOpenExternal: (path: string) => void;
+  onRevealPath: (path: string) => void;
+  onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  onContextMenu: (menu: FileContextMenu) => void;
 }) {
   const isExpanded = expanded.has(entry.path);
   const children = loaded[entry.path];
@@ -223,12 +307,24 @@ function TreeRow({
 
   return (
     <div>
-      <button
-        className={`flex w-full items-center gap-1.5 py-[3px] text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
+      <div
+        role="button"
+        tabIndex={0}
+        className={`group/file-row flex w-full items-center gap-1.5 py-[3px] pr-1 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
           isActive ? "bg-cc-surface-strong" : ""
         }`}
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => { if (entry.isDir) onToggle(entry.path); else onOpenFile(entry.path); }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          if (entry.isDir) onToggle(entry.path);
+          else onOpenFile(entry.path);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu({ x: event.clientX, y: event.clientY, entry });
+        }}
         title={entry.path}
       >
         {entry.isDir ? (
@@ -245,7 +341,35 @@ function TreeRow({
         {changed ? (
           <span className="mr-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/80" title="Modified (git)" />
         ) : null}
-      </button>
+        <span className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/file-row:opacity-100 group-focus-within/file-row:opacity-100">
+          {!entry.isDir ? (
+            <RowAction
+              label="Open in Sogo"
+              onClick={() => onOpenFile(entry.path)}
+            >
+              <FileText size={12} />
+            </RowAction>
+          ) : null}
+          <RowAction
+            label={entry.isDir ? "Open in Finder" : "Open with default app"}
+            onClick={() => onOpenExternal(entry.path)}
+          >
+            <ExternalLink size={12} />
+          </RowAction>
+          <RowAction
+            label="Reveal in Finder"
+            onClick={() => onRevealPath(entry.path)}
+          >
+            <FolderSearch size={12} />
+          </RowAction>
+          <RowAction
+            label="More actions"
+            onClick={(event) => onContextMenu({ x: event.clientX, y: event.clientY, entry })}
+          >
+            <MoreHorizontal size={12} />
+          </RowAction>
+        </span>
+      </div>
       {entry.isDir && isExpanded ? (
         <TreeLevel
           entries={children ?? []}
@@ -258,8 +382,149 @@ function TreeRow({
           changedPaths={changedPaths}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
+          onOpenExternal={onOpenExternal}
+          onRevealPath={onRevealPath}
+          onCopyPath={onCopyPath}
+          onContextMenu={onContextMenu}
         />
       ) : null}
     </div>
   );
+}
+
+function RowAction({
+  label,
+  children,
+  onClick,
+}: {
+  label: string;
+  children: ReactNode;
+  onClick: (point: { clientX: number; clientY: number }) => void;
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className="flex h-5 w-5 items-center justify-center rounded text-cc-muted transition-colors hover:bg-cc-background/50 hover:text-cc-foreground"
+      title={label}
+      aria-label={label}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick({ clientX: event.clientX, clientY: event.clientY });
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        onClick({ clientX: rect.right, clientY: rect.bottom });
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function FileActionsMenu({
+  entry,
+  cwd,
+  x,
+  y,
+  onOpenFile,
+  onOpenExternal,
+  onRevealPath,
+  onCopyPath,
+  onClose,
+}: {
+  entry: FileEntry;
+  cwd: string;
+  x: number;
+  y: number;
+  onOpenFile: (path: string) => void;
+  onOpenExternal: (path: string) => void;
+  onRevealPath: (path: string) => void;
+  onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="sogo-pop fixed z-[70] w-56 rounded-xl border border-cc-border bg-cc-surface/95 p-1 shadow-2xl"
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {!entry.isDir ? (
+        <ContextItem
+          icon={<FileText size={12} />}
+          label="Open in Sogo"
+          onClick={() => {
+            onClose();
+            onOpenFile(entry.path);
+          }}
+        />
+      ) : null}
+      <ContextItem
+        icon={<ExternalLink size={12} />}
+        label={entry.isDir ? "Open in Finder" : "Open with default app"}
+        onClick={() => {
+          onClose();
+          onOpenExternal(entry.path);
+        }}
+      />
+      <ContextItem
+        icon={<FolderSearch size={12} />}
+        label="Reveal in Finder"
+        onClick={() => {
+          onClose();
+          onRevealPath(entry.path);
+        }}
+      />
+      <div className="mx-2 my-1 h-px bg-cc-border/60" />
+      <ContextItem
+        icon={<Copy size={12} />}
+        label="Copy relative path"
+        onClick={() => {
+          onClose();
+          onCopyPath(entry.path, "relative");
+        }}
+      />
+      <ContextItem
+        icon={<Copy size={12} />}
+        label="Copy full path"
+        onClick={() => {
+          onClose();
+          onCopyPath(entry.path, "absolute");
+        }}
+      />
+      <div className="truncate px-2.5 pb-1 pt-1.5 font-mono text-[10px] text-cc-muted/70" title={entry.path}>
+        {relativePath(cwd, entry.path)}
+      </div>
+    </div>
+  );
+}
+
+function ContextItem({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-cc-muted transition-colors duration-100 hover:bg-cc-surface-strong hover:text-cc-foreground"
+      onClick={onClick}
+    >
+      <span className="shrink-0">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function relativePath(cwd: string, path: string) {
+  if (path === cwd) return ".";
+  if (path.startsWith(`${cwd}/`)) return path.slice(cwd.length + 1);
+  return path;
 }
