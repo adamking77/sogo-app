@@ -280,7 +280,7 @@ export function CommandPalette({
       }}
     >
       <div className="absolute inset-0 bg-black/25" onMouseDown={onClose} />
-      <div className="sogo-pop relative flex w-[560px] max-w-[calc(100%-48px)] flex-col overflow-hidden rounded-2xl border border-cc-border bg-cc-surface shadow-2xl">
+      <div className="sogo-pop sogo-surface-bg relative flex w-[560px] max-w-[calc(100%-48px)] flex-col overflow-hidden rounded-2xl border border-cc-border shadow-2xl">
         <div className="flex items-center gap-2.5 border-b border-cc-border/60 px-4">
           <Search size={14} className="shrink-0 text-cc-muted" />
           <input

@@ -377,6 +377,9 @@ pub fn run() {
             files::read_text_file,
             files::stat_file,
             files::write_text_file,
+            files::create_workspace_file,
+            files::create_workspace_directory,
+            files::import_paths_into_workspace,
             files::read_vault_file,
             files::write_vault_file,
             files::list_files_recursive

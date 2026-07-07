@@ -83,7 +83,7 @@ function App() {
   const [windowFocused, setWindowFocused] = useState(true);
   const [innerWidth, setInnerWidth] = useState(window.innerWidth);
   const closeConfirmTimerRef = useRef<number | undefined>();
-  const { fontSize, setPreference } = useThemeStore();
+  const { fontSize, backgroundOpacity, setPreference } = useThemeStore();
   const palette = useResolvedPalette();
   const editorSessions = useEditorStore((state) => state.sessions);
   const openFile = useEditorStore((state) => state.openFile);
@@ -96,8 +96,8 @@ function App() {
   const tauriRuntime = isTauriRuntime();
 
   useEffect(() => {
-    applyPalette(palette);
-  }, [palette]);
+    applyPalette(palette, backgroundOpacity);
+  }, [palette, backgroundOpacity]);
 
   useEffect(() => {
     const onResize = () => setInnerWidth(window.innerWidth);
@@ -863,7 +863,7 @@ function App() {
     <div className="relative flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
       <div className="flex min-h-0 w-full flex-1 gap-2">
       <div
-        className={`relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95 ${
+        className={`sogo-background-bg relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border ${
           ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
         }`}
         style={{
@@ -880,7 +880,7 @@ function App() {
           onDoubleClick={() => runWindowAction("zoom")}
         />
         <header
-          className="flex h-10 shrink-0 items-center bg-cc-surface/80"
+          className="sogo-surface-bg flex h-10 shrink-0 items-center"
           data-tauri-drag-region
           onMouseDown={dragHandler}
           onDoubleClick={(event) => {
@@ -930,7 +930,7 @@ function App() {
             className="flex min-w-0 flex-1 flex-col"
             style={{ minWidth: editorVisible && !ejectedEditorActive ? terminalMinWidth : 0 }}
           >
-            <div className="relative min-h-0 flex-1 bg-[color:var(--cc-background)]">
+            <div className="sogo-background-bg relative min-h-0 flex-1">
               {tabs.length === 0 ? (
                 <EmptyState
                   runtimeReady={tauriRuntime}
@@ -948,6 +948,7 @@ function App() {
                       active={tab.id === activeTab?.id}
                       palette={palette}
                       fontSize={FONT_SIZE[fontSize]}
+                      backgroundOpacity={backgroundOpacity}
                       onData={handleTerminalData}
                       onExit={handleTerminalExit}
                       onError={handleTerminalError}
@@ -1257,7 +1258,7 @@ function PanelWindow({
 
   return (
     <aside
-      className="sogo-panel-in relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95"
+      className="sogo-panel-in sogo-surface-bg relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border"
       style={{
         width: RIGHT_SIDEBAR_WIDTH,
         minWidth: RIGHT_SIDEBAR_WIDTH,
@@ -1302,7 +1303,7 @@ function QuitConfirm({
   return (
     <div className="absolute inset-0 z-[70] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/30" onMouseDown={onCancel} />
-      <div className="sogo-pop relative w-80 rounded-2xl border border-cc-border bg-cc-surface p-5 shadow-2xl">
+      <div className="sogo-pop sogo-surface-bg relative w-80 rounded-2xl border border-cc-border p-5 shadow-2xl">
         <div className="text-sm font-medium text-cc-foreground">Quit Sogo?</div>
         <p className="mt-1.5 text-xs leading-5 text-cc-muted">
           {runningCount} running Claude session{runningCount === 1 ? "" : "s"} will stop. Sessions resume where they left off next time.

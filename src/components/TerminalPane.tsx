@@ -27,6 +27,7 @@ interface TerminalPaneProps {
   active: boolean;
   palette: Palette;
   fontSize: number;
+  backgroundOpacity: number;
   onData: (tabId: string, text: string) => void;
   onExit: (tabId: string) => void;
   onError: (tabId: string, error: string) => void;
@@ -66,6 +67,7 @@ export function TerminalPane({
   active,
   palette,
   fontSize,
+  backgroundOpacity,
   onData,
   onExit,
   onError,
@@ -196,7 +198,7 @@ export function TerminalPane({
       convertEol: false,
       scrollback: 20_000,
       allowProposedApi: true,
-      theme: palette.terminal,
+      theme: terminalTheme(palette, backgroundOpacity),
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -338,6 +340,7 @@ export function TerminalPane({
           if (cancelled || event.payload.type !== "drop") return;
           const paths = event.payload.paths;
           if (!paths || paths.length === 0) return;
+          if (isFilesPanelDrop(event.payload.position.x, event.payload.position.y)) return;
           writeToPty(`${paths.map(quotePath).join(" ")} `);
           terminalRef.current?.focus();
         });
@@ -409,12 +412,12 @@ export function TerminalPane({
     if (!terminal) return;
 
     terminal.options.fontSize = fontSize;
-    terminal.options.theme = palette.terminal;
+    terminal.options.theme = terminalTheme(palette, backgroundOpacity);
     if (active) {
       scheduleFit();
       terminal.focus();
     }
-  }, [active, fontSize, palette.terminal, scheduleFit]);
+  }, [active, backgroundOpacity, fontSize, palette, scheduleFit]);
 
   useEffect(() => {
     if (tab.status === "stopped" || tab.status === "error") {
@@ -507,7 +510,7 @@ export function TerminalPane({
     >
       <div ref={containerRef} className={`h-full min-h-0 min-w-0 ${sessionBlocked ? "pointer-events-none" : ""}`} />
       {findOpen ? (
-        <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border bg-cc-surface/95 py-1 pl-3 pr-1 shadow-lg">
+        <div className="sogo-surface-bg absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border py-1 pl-3 pr-1 shadow-lg">
           <input
             ref={findInputRef}
             className="h-6 w-44 bg-transparent font-mono text-xs text-cc-foreground outline-none placeholder:text-cc-muted"
@@ -716,6 +719,29 @@ async function copyTextToClipboard(text: string) {
 function quotePath(path: string): string {
   // Single-quote so spaces survive; escape any embedded single quotes.
   return `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+function terminalTheme(palette: Palette, backgroundOpacity: number): Palette["terminal"] {
+  return {
+    ...palette.terminal,
+    background: withAlpha(palette.terminal.background, backgroundOpacity),
+  };
+}
+
+function withAlpha(color: string, alpha: number) {
+  const normalized = color.replace("#", "");
+  if (normalized.length !== 6) return color;
+  const value = Number.parseInt(normalized, 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${Math.min(1, Math.max(0.7, alpha))})`;
+}
+
+function isFilesPanelDrop(physicalX: number, physicalY: number) {
+  const scale = window.devicePixelRatio || 1;
+  const element = document.elementFromPoint(physicalX / scale, physicalY / scale);
+  return !!element?.closest("[data-sogo-files-panel='true']");
 }
 
 function decodeBase64(data: string): Uint8Array {

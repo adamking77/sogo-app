@@ -165,7 +165,7 @@ export function ControlRail({
   onOpenPalette: () => void;
 }) {
   return (
-    <aside className="sogo-panel-in flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border bg-cc-surface/90 px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]">
+    <aside className="sogo-panel-in sogo-surface-bg flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]">
       <RailButton label="New session (⌘N)" onClick={onNewTab}>
         <Plus size={14} />
       </RailButton>
@@ -259,7 +259,7 @@ function RailSettingsPopover({
   tabsCollapsed: boolean;
   onToggleTabs: () => void;
 }) {
-  const { preference, fontSize, setPreference, setFontSize } = useThemeStore();
+  const { preference, fontSize, backgroundOpacity, setPreference, setFontSize, setBackgroundOpacity } = useThemeStore();
   const [open, setOpen] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState<boolean | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -308,7 +308,7 @@ function RailSettingsPopover({
         <Settings2 size={12} />
       </RailButton>
       {open ? (
-        <div className="sogo-pop absolute bottom-9 right-0 z-50 w-64 rounded-xl border border-cc-border bg-cc-surface/95 p-3 shadow-2xl">
+        <div className="sogo-pop sogo-surface-bg absolute bottom-9 right-0 z-50 w-64 rounded-xl border border-cc-border p-3 shadow-2xl">
           <div className="mb-2 text-xs font-medium text-cc-foreground">Settings</div>
           <div className="space-y-3">
             <div>
@@ -346,6 +346,22 @@ function RailSettingsPopover({
                   </button>
                 ))}
               </div>
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide text-cc-muted">
+                <span>Background</span>
+                <span className="font-mono">{Math.round(backgroundOpacity * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="70"
+                max="100"
+                step="1"
+                value={Math.round(backgroundOpacity * 100)}
+                className="w-full accent-cc-accent"
+                onChange={(event) => setBackgroundOpacity(Number(event.currentTarget.value) / 100)}
+                aria-label="Background opacity"
+              />
             </div>
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wide text-cc-muted">Notifications</div>

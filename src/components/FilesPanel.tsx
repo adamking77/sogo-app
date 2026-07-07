@@ -20,8 +20,8 @@ interface FilesPanelProps {
 
 type LoadedMap = Record<string, FileEntry[]>;
 type LoadingSet = Set<string>;
-type FileContextMenu = { x: number; y: number; entry: FileEntry } | null;
-const ACTION_MENU_WIDTH = 212;
+type FileContextMenu = { x: number; y: number; entry: FileEntry | null; targetDir: string } | null;
+const ACTION_MENU_WIDTH = 224;
 
 export function FilesPanel({
   sessionId,
@@ -37,6 +37,8 @@ export function FilesPanel({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<FileContextMenu>(null);
+  const [dropTargetDir, setDropTargetDir] = useState<string | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
 
@@ -123,6 +125,120 @@ export function FilesPanel({
     }
   }, [cwd]);
 
+  const refreshDir = useCallback((path: string) => {
+    void loadDir(path === cwd ? undefined : path);
+  }, [cwd, loadDir]);
+
+  const createFile = useCallback(async (parentPath: string) => {
+    const name = window.prompt("New file name");
+    if (!name?.trim()) return;
+    if (!isTauriRuntime()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const meta = await invoke<{ path: string }>("create_workspace_file", {
+        sessionId,
+        parentPath,
+        name: name.trim(),
+      });
+      refreshDir(parentPath);
+      toastSuccess(`Created ${name.trim()}`);
+      onOpenFile(meta.path);
+    } catch (err) {
+      toastError(formatFileError(err));
+    }
+  }, [onOpenFile, refreshDir, sessionId]);
+
+  const createFolder = useCallback(async (parentPath: string) => {
+    const name = window.prompt("New folder name");
+    if (!name?.trim()) return;
+    if (!isTauriRuntime()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("create_workspace_directory", {
+        sessionId,
+        parentPath,
+        name: name.trim(),
+      });
+      setExpanded((prev) => new Set(prev).add(parentPath));
+      refreshDir(parentPath);
+      toastSuccess(`Created ${name.trim()}`);
+    } catch (err) {
+      toastError(formatFileError(err));
+    }
+  }, [refreshDir, sessionId]);
+
+  const importPaths = useCallback(async (targetDir: string, sourcePaths: string[]) => {
+    if (!isTauriRuntime() || sourcePaths.length === 0) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const imported = await invoke<FileEntry[]>("import_paths_into_workspace", {
+        sessionId,
+        targetDir,
+        sourcePaths,
+      });
+      setExpanded((prev) => new Set(prev).add(targetDir));
+      refreshDir(targetDir);
+      toastSuccess(imported.length === 1 ? `Imported ${imported[0].name}` : `Imported ${imported.length} items`);
+    } catch (err) {
+      toastError(formatFileError(err));
+    }
+  }, [refreshDir, sessionId]);
+
+  const importWithDialog = useCallback(async (targetDir: string, directory: boolean) => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory, multiple: true });
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      await importPaths(targetDir, paths);
+    } catch (err) {
+      toastError(String(err));
+    }
+  }, [importPaths]);
+
+  const resolveDropTarget = useCallback((physicalX: number, physicalY: number) => {
+    const scale = window.devicePixelRatio || 1;
+    const element = document.elementFromPoint(physicalX / scale, physicalY / scale);
+    const panel = panelRef.current;
+    if (!element || !panel?.contains(element)) return null;
+    const target = (element as HTMLElement).closest<HTMLElement>("[data-sogo-drop-dir]");
+    return target?.dataset.sogoDropDir ?? cwd;
+  }, [cwd]);
+
+  useEffect(() => {
+    if (!folderChosen || !isTauriRuntime()) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
+        if (cancelled) return;
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (cancelled) return;
+          if (event.payload.type === "leave") {
+            setDropTargetDir(null);
+            return;
+          }
+          if (event.payload.type !== "over" && event.payload.type !== "enter" && event.payload.type !== "drop") return;
+          const targetDir = resolveDropTarget(event.payload.position.x, event.payload.position.y);
+          setDropTargetDir(targetDir);
+          if (event.payload.type === "drop") {
+            setDropTargetDir(null);
+            if (targetDir && event.payload.paths.length > 0) {
+              void importPaths(targetDir, event.payload.paths);
+            }
+          }
+        });
+      })
+      .catch((err) => toastError(String(err)));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [folderChosen, importPaths, resolveDropTarget]);
+
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -139,7 +255,7 @@ export function FilesPanel({
 
   if (!folderChosen) {
     return (
-      <section className="flex min-h-0 flex-1 flex-col items-center justify-center bg-cc-surface p-6 text-center">
+      <section className="sogo-surface-bg flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
         <p className="text-xs text-cc-muted">Open a folder session to browse files.</p>
       </section>
     );
@@ -149,14 +265,34 @@ export function FilesPanel({
   const rootEntries = loaded[cwd];
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
-      <div className="flex h-10 shrink-0 items-center px-3">
+    <section
+      ref={panelRef}
+      className="sogo-surface-bg flex min-h-0 flex-1 flex-col"
+      data-sogo-files-panel="true"
+      data-sogo-drop-dir={cwd}
+    >
+      <div
+        className={`flex h-10 shrink-0 items-center px-3 transition-colors ${dropTargetDir === cwd ? "bg-cc-accent/10" : ""}`}
+        data-sogo-drop-dir={cwd}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setContextMenu({ x: event.clientX, y: event.clientY, entry: null, targetDir: cwd });
+        }}
+      >
         <h2 className="truncate text-sm font-semibold" title={cwd}>{rootName}</h2>
       </div>
       {error ? (
         <div className="m-3 rounded-md border border-red-400/20 bg-red-400/10 p-3 text-xs text-red-100">{error}</div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto py-1"
+        data-sogo-drop-dir={cwd}
+        onContextMenu={(event) => {
+          if ((event.target as HTMLElement).closest("[data-sogo-file-row]")) return;
+          event.preventDefault();
+          setContextMenu({ x: event.clientX, y: event.clientY, entry: null, targetDir: cwd });
+        }}
+      >
         {loading.has(cwd) && !rootEntries ? (
           <div className="px-4 py-2 text-xs text-cc-muted">Loading...</div>
         ) : rootEntries ? (
@@ -174,6 +310,7 @@ export function FilesPanel({
             onOpenExternal={openExternal}
             onRevealPath={revealPath}
             onCopyPath={copyPath}
+            dropTargetDir={dropTargetDir}
             onOpenContextMenu={setContextMenu}
           />
         ) : null}
@@ -181,6 +318,7 @@ export function FilesPanel({
       {contextMenu ? (
         <FileActionsMenu
           entry={contextMenu.entry}
+          targetDir={contextMenu.targetDir}
           cwd={cwd}
           x={contextMenu.x}
           y={contextMenu.y}
@@ -188,6 +326,10 @@ export function FilesPanel({
           onOpenExternal={openExternal}
           onRevealPath={revealPath}
           onCopyPath={copyPath}
+          onCreateFile={createFile}
+          onCreateFolder={createFolder}
+          onImportFiles={(targetDir) => void importWithDialog(targetDir, false)}
+          onImportFolder={(targetDir) => void importWithDialog(targetDir, true)}
           onClose={() => setContextMenu(null)}
         />
       ) : null}
@@ -224,6 +366,7 @@ function TreeLevel({
   onOpenExternal,
   onRevealPath,
   onCopyPath,
+  dropTargetDir,
   onOpenContextMenu,
 }: {
   entries: FileEntry[];
@@ -239,6 +382,7 @@ function TreeLevel({
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  dropTargetDir: string | null;
   onOpenContextMenu: (menu: FileContextMenu) => void;
 }) {
   if (loading.has(parentPath) && entries.length === 0) {
@@ -255,6 +399,7 @@ function TreeLevel({
         <TreeRow
           key={entry.path}
           entry={entry}
+          parentPath={parentPath}
           depth={depth}
           loaded={loaded}
           loading={loading}
@@ -266,6 +411,7 @@ function TreeLevel({
           onOpenExternal={onOpenExternal}
           onRevealPath={onRevealPath}
           onCopyPath={onCopyPath}
+          dropTargetDir={dropTargetDir}
           onOpenContextMenu={onOpenContextMenu}
         />
       ))}
@@ -275,6 +421,7 @@ function TreeLevel({
 
 function TreeRow({
   entry,
+  parentPath,
   depth,
   loaded,
   loading,
@@ -286,9 +433,11 @@ function TreeRow({
   onOpenExternal,
   onRevealPath,
   onCopyPath,
+  dropTargetDir,
   onOpenContextMenu,
 }: {
   entry: FileEntry;
+  parentPath: string;
   depth: number;
   loaded: LoadedMap;
   loading: LoadingSet;
@@ -300,12 +449,15 @@ function TreeRow({
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  dropTargetDir: string | null;
   onOpenContextMenu: (menu: FileContextMenu) => void;
 }) {
   const isExpanded = expanded.has(entry.path);
   const children = loaded[entry.path];
   const isActive = !entry.isDir && activePath === entry.path;
   const changed = !entry.isDir && changedPaths.size > 0 && isChanged(entry.path, changedPaths);
+  const rowDropDir = entry.isDir ? entry.path : parentPath;
+  const isDropTarget = dropTargetDir === rowDropDir;
 
   return (
     <div>
@@ -313,9 +465,11 @@ function TreeRow({
         role="button"
         tabIndex={0}
         className={`group/file-row flex w-full items-center gap-1.5 py-[3px] pr-2 text-left text-xs transition-colors duration-150 hover:bg-cc-surface-strong ${
-          isActive ? "bg-cc-surface-strong" : ""
+          isDropTarget ? "bg-cc-accent/10" : isActive ? "bg-cc-surface-strong" : ""
         }`}
         style={{ paddingLeft: 10 + depth * 14 }}
+        data-sogo-file-row="true"
+        data-sogo-drop-dir={rowDropDir}
         onClick={() => { if (entry.isDir) onToggle(entry.path); else onOpenFile(entry.path); }}
         onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") return;
@@ -325,7 +479,7 @@ function TreeRow({
         }}
         onContextMenu={(event) => {
           event.preventDefault();
-          onOpenContextMenu({ x: event.clientX, y: event.clientY, entry });
+          onOpenContextMenu({ x: event.clientX, y: event.clientY, entry, targetDir: rowDropDir });
         }}
         title={entry.path}
       >
@@ -343,13 +497,6 @@ function TreeRow({
         {changed ? (
           <span className="mr-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/80" title="Modified (git)" />
         ) : null}
-        {!entry.isDir ? (
-          <span className="ml-auto hidden shrink-0 items-center gap-1 text-[10.5px] group-hover/file-row:flex group-focus-within/file-row:flex">
-            <InlineAction label="Open" onClick={() => onOpenFile(entry.path)} />
-            <InlineAction label="Default" onClick={() => onOpenExternal(entry.path)} />
-            <InlineAction label="Finder" onClick={() => onRevealPath(entry.path)} />
-          </span>
-        ) : null}
       </div>
       {entry.isDir && isExpanded ? (
         <TreeLevel
@@ -366,6 +513,7 @@ function TreeRow({
           onOpenExternal={onOpenExternal}
           onRevealPath={onRevealPath}
           onCopyPath={onCopyPath}
+          dropTargetDir={dropTargetDir}
           onOpenContextMenu={onOpenContextMenu}
         />
       ) : null}
@@ -375,6 +523,7 @@ function TreeRow({
 
 function FileActionsMenu({
   entry,
+  targetDir,
   cwd,
   x,
   y,
@@ -382,9 +531,14 @@ function FileActionsMenu({
   onOpenExternal,
   onRevealPath,
   onCopyPath,
+  onCreateFile,
+  onCreateFolder,
+  onImportFiles,
+  onImportFolder,
   onClose,
 }: {
-  entry: FileEntry;
+  entry: FileEntry | null;
+  targetDir: string;
   cwd: string;
   x: number;
   y: number;
@@ -392,17 +546,55 @@ function FileActionsMenu({
   onOpenExternal: (path: string) => void;
   onRevealPath: (path: string) => void;
   onCopyPath: (path: string, variant: "absolute" | "relative") => void;
+  onCreateFile: (parentPath: string) => void;
+  onCreateFolder: (parentPath: string) => void;
+  onImportFiles: (targetDir: string) => void;
+  onImportFolder: (targetDir: string) => void;
   onClose: () => void;
 }) {
-  const position = clampActionMenuPosition(x, y, entry.isDir);
+  const position = clampActionMenuPosition(x, y, entry);
 
   return createPortal(
     <div
-      className="sogo-pop fixed z-[70] w-[212px] rounded-xl border border-cc-border bg-cc-surface/95 p-1 shadow-2xl"
+      className="sogo-pop sogo-surface-bg fixed z-[70] w-[224px] rounded-xl border border-cc-border p-1 shadow-2xl"
       style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {!entry.isDir ? (
+      {!entry || entry.isDir ? (
+        <>
+          <ContextItem
+            label="New file"
+            onClick={() => {
+              onClose();
+              onCreateFile(targetDir);
+            }}
+          />
+          <ContextItem
+            label="New folder"
+            onClick={() => {
+              onClose();
+              onCreateFolder(targetDir);
+            }}
+          />
+          <div className="mx-2 my-1 h-px bg-cc-border/60" />
+          <ContextItem
+            label="Import files..."
+            onClick={() => {
+              onClose();
+              onImportFiles(targetDir);
+            }}
+          />
+          <ContextItem
+            label="Import folder..."
+            onClick={() => {
+              onClose();
+              onImportFolder(targetDir);
+            }}
+          />
+          <div className="mx-2 my-1 h-px bg-cc-border/60" />
+        </>
+      ) : null}
+      {entry && !entry.isDir ? (
         <ContextItem
           label="Open in Sogo"
           onClick={() => {
@@ -411,55 +603,44 @@ function FileActionsMenu({
           }}
         />
       ) : null}
-      <ContextItem
-        label={entry.isDir ? "Open in Finder" : "Open with default app"}
-        onClick={() => {
-          onClose();
-          onOpenExternal(entry.path);
-        }}
-      />
-      <ContextItem
-        label="Reveal in Finder"
-        onClick={() => {
-          onClose();
-          onRevealPath(entry.path);
-        }}
-      />
-      <div className="mx-2 my-1 h-px bg-cc-border/60" />
-      <ContextItem
-        label="Copy relative path"
-        onClick={() => {
-          onClose();
-          onCopyPath(entry.path, "relative");
-        }}
-      />
-      <ContextItem
-        label="Copy full path"
-        onClick={() => {
-          onClose();
-          onCopyPath(entry.path, "absolute");
-        }}
-      />
-      <div className="truncate px-2.5 pb-1 pt-1.5 font-mono text-[10px] text-cc-muted/70" title={entry.path}>
-        {relativePath(cwd, entry.path)}
+      {entry ? (
+        <>
+          <ContextItem
+            label={entry.isDir ? "Open in Finder" : "Open with default app"}
+            onClick={() => {
+              onClose();
+              onOpenExternal(entry.path);
+            }}
+          />
+          <ContextItem
+            label="Reveal in Finder"
+            onClick={() => {
+              onClose();
+              onRevealPath(entry.path);
+            }}
+          />
+          <div className="mx-2 my-1 h-px bg-cc-border/60" />
+          <ContextItem
+            label="Copy relative path"
+            onClick={() => {
+              onClose();
+              onCopyPath(entry.path, "relative");
+            }}
+          />
+          <ContextItem
+            label="Copy full path"
+            onClick={() => {
+              onClose();
+              onCopyPath(entry.path, "absolute");
+            }}
+          />
+        </>
+      ) : null}
+      <div className="truncate px-2.5 pb-1 pt-1.5 font-mono text-[10px] text-cc-muted/70" title={entry?.path ?? targetDir}>
+        {relativePath(cwd, entry?.path ?? targetDir)}
       </div>
     </div>,
     document.body,
-  );
-}
-
-function InlineAction({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      className="rounded px-1.5 py-0.5 text-cc-muted transition-colors hover:bg-cc-background/50 hover:text-cc-foreground"
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onClick();
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -486,14 +667,15 @@ function relativePath(cwd: string, path: string) {
   return path;
 }
 
-function actionMenuHeight(isDir: boolean) {
-  return isDir ? 142 : 174;
+function actionMenuHeight(entry: FileEntry | null) {
+  if (!entry) return 198;
+  return entry.isDir ? 328 : 174;
 }
 
-function clampActionMenuPosition(x: number, y: number, isDir: boolean) {
+function clampActionMenuPosition(x: number, y: number, entry: FileEntry | null) {
   const margin = 8;
   const maxX = Math.max(margin, window.innerWidth - ACTION_MENU_WIDTH - margin);
-  const maxY = Math.max(margin, window.innerHeight - actionMenuHeight(isDir) - margin);
+  const maxY = Math.max(margin, window.innerHeight - actionMenuHeight(entry) - margin);
 
   return {
     x: Math.min(Math.max(margin, x), maxX),

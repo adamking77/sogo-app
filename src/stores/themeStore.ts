@@ -93,8 +93,10 @@ interface ThemeState {
   preference: PalettePreference;
   systemDark: boolean;
   fontSize: "small" | "medium" | "large";
+  backgroundOpacity: number;
   setPreference: (preference: PalettePreference) => void;
   setFontSize: (fontSize: ThemeState["fontSize"]) => void;
+  setBackgroundOpacity: (backgroundOpacity: number) => void;
 }
 
 function isPalettePreference(value: string | null): value is PalettePreference {
@@ -110,6 +112,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   })(),
   systemDark: systemDarkQuery.matches,
   fontSize: (localStorage.getItem("sogo.fontSize") as ThemeState["fontSize"] | null) ?? "medium",
+  backgroundOpacity: readStoredOpacity(),
   setPreference: (preference) => {
     localStorage.setItem("sogo.palette", preference);
     set({ preference });
@@ -117,6 +120,12 @@ export const useThemeStore = create<ThemeState>((set) => ({
   setFontSize: (fontSize) => {
     localStorage.setItem("sogo.fontSize", fontSize);
     set({ fontSize });
+  },
+  setBackgroundOpacity: (backgroundOpacity) => {
+    const nextOpacity = clampOpacity(backgroundOpacity);
+    localStorage.setItem("sogo.backgroundOpacity", String(nextOpacity));
+    set({ backgroundOpacity: nextOpacity });
+    applyBackgroundOpacity(nextOpacity);
   },
 }));
 
@@ -136,7 +145,7 @@ export function useResolvedPalette(): Palette {
   return palettes[resolvePaletteName(preference, systemDark)];
 }
 
-export function applyPalette(palette: Palette) {
+export function applyPalette(palette: Palette, backgroundOpacity = useThemeStore.getState().backgroundOpacity) {
   const root = document.documentElement;
   root.style.colorScheme = palette.name === "light" || palette.name === "latte" ? "light" : "dark";
   root.style.setProperty("--cc-background", palette.background);
@@ -152,6 +161,20 @@ export function applyPalette(palette: Palette) {
   root.style.setProperty("--cc-border", palette.border);
   root.style.setProperty("--cc-accent", palette.accent);
   root.style.setProperty("--cc-accent-rgb", hexToRgbChannels(palette.accent));
+  applyBackgroundOpacity(backgroundOpacity);
+}
+
+export function applyBackgroundOpacity(backgroundOpacity: number) {
+  document.documentElement.style.setProperty("--cc-app-opacity", String(clampOpacity(backgroundOpacity)));
+}
+
+function readStoredOpacity() {
+  return clampOpacity(Number(localStorage.getItem("sogo.backgroundOpacity") ?? "0.95"));
+}
+
+function clampOpacity(value: number) {
+  if (!Number.isFinite(value)) return 0.95;
+  return Math.min(1, Math.max(0.7, value));
 }
 
 function hexToRgbChannels(hex: string) {

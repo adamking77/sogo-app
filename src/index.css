@@ -17,6 +17,7 @@
   --cc-border: rgba(69, 71, 90, 0.65);
   --cc-accent: #89b4fa;
   --cc-accent-rgb: 137 180 250;
+  --cc-app-opacity: 0.95;
   --cc-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --cc-font-mono: "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace;
 }
@@ -58,7 +59,15 @@ select {
 .session-terminal-shell {
   background:
     linear-gradient(to bottom, rgba(var(--cc-surface-rgb) / 0.28), transparent 82px),
-    var(--cc-background);
+    rgba(var(--cc-background-rgb) / var(--cc-app-opacity));
+}
+
+.sogo-background-bg {
+  background-color: rgba(var(--cc-background-rgb) / var(--cc-app-opacity));
+}
+
+.sogo-surface-bg {
+  background-color: rgba(var(--cc-surface-rgb) / var(--cc-app-opacity));
 }
 
 .session-terminal-shell .xterm {
