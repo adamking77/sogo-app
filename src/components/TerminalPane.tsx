@@ -338,6 +338,20 @@ export function TerminalPane({
     };
   }, [active, tab.id, writeToPty]);
 
+  // Paths dragged from the files tree land here (pointer-based drag; HTML5
+  // DnD is unavailable with the native drag-drop handler enabled).
+  useEffect(() => {
+    if (!active) return;
+    const onInsertPath = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail;
+      if (!path) return;
+      writeToPty(`${quotePath(path)} `);
+      terminalRef.current?.focus();
+    };
+    window.addEventListener("sogo:insert-terminal-path", onInsertPath);
+    return () => window.removeEventListener("sogo:insert-terminal-path", onInsertPath);
+  }, [active, writeToPty]);
+
   // Refocus requests (after skill activation, editor close, palette actions).
   useEffect(() => {
     if (!active) return;

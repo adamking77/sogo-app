@@ -466,6 +466,261 @@ pub fn import_paths_into_workspace(
     Ok(imported)
 }
 
+#[tauri::command]
+pub fn rename_workspace_path(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    path: String,
+    new_name: String,
+) -> Result<FileEntry, FileCommandError> {
+    let root = workspace_root(&registry, &session_id)?;
+    let source = resolve_existing_path(&root, &path)?;
+    if source == root {
+        return Err(file_error("invalidPath", "Cannot rename the workspace root"));
+    }
+
+    let parent = source
+        .parent()
+        .ok_or_else(|| file_error("invalidPath", "Path has no parent directory"))?;
+    let target = child_path(parent, &new_name)?;
+    ensure_under_root(&root, &target)?;
+    if target == source {
+        return file_entry(&source, source.is_dir());
+    }
+    if target.exists() {
+        return Err(file_error(
+            "exists",
+            "A file or folder already exists with that name",
+        ));
+    }
+
+    let is_dir = source.is_dir();
+    fs::rename(&source, &target)
+        .map_err(|error| file_error("writeFailed", format!("Could not rename: {error}")))?;
+    file_entry(&target, is_dir)
+}
+
+#[tauri::command]
+pub fn delete_workspace_path(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    path: String,
+) -> Result<(), FileCommandError> {
+    let root = workspace_root(&registry, &session_id)?;
+    let target = resolve_existing_path(&root, &path)?;
+    if target == root {
+        return Err(file_error("invalidPath", "Cannot delete the workspace root"));
+    }
+
+    // Trash, never rm: recoverable from Finder if the wrong row was clicked.
+    trash::delete(&target)
+        .map_err(|error| file_error("writeFailed", format!("Could not move to Trash: {error}")))
+}
+
+#[tauri::command]
+pub fn duplicate_workspace_path(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    path: String,
+) -> Result<FileEntry, FileCommandError> {
+    let root = workspace_root(&registry, &session_id)?;
+    let source = resolve_existing_path(&root, &path)?;
+    if source == root {
+        return Err(file_error("invalidPath", "Cannot duplicate the workspace root"));
+    }
+
+    let parent = source
+        .parent()
+        .ok_or_else(|| file_error("invalidPath", "Path has no parent directory"))?;
+    let destination = available_copy_path(parent, &source)?;
+    ensure_under_root(&root, &destination)?;
+
+    if source.is_dir() {
+        copy_dir_recursive(&source, &destination)?;
+        file_entry(&destination, true)
+    } else {
+        fs::copy(&source, &destination)
+            .map_err(|error| file_error("writeFailed", format!("Could not duplicate: {error}")))?;
+        file_entry(&destination, false)
+    }
+}
+
+#[tauri::command]
+pub fn move_workspace_path(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    source_path: String,
+    target_dir: String,
+) -> Result<FileEntry, FileCommandError> {
+    let root = workspace_root(&registry, &session_id)?;
+    let source = resolve_existing_path(&root, &source_path)?;
+    if source == root {
+        return Err(file_error("invalidPath", "Cannot move the workspace root"));
+    }
+
+    let target = resolve_existing_path(&root, &target_dir)?;
+    if !target.is_dir() {
+        return Err(file_error(
+            "notDirectory",
+            format!("Not a directory: {}", display_path(&target)),
+        ));
+    }
+    if target == source || target.starts_with(&source) {
+        return Err(file_error(
+            "invalidPath",
+            "Cannot move a folder into itself",
+        ));
+    }
+
+    let name = source
+        .file_name()
+        .ok_or_else(|| file_error("invalidPath", "Path has no filename"))?;
+    let destination = target.join(name);
+    if destination == source {
+        return file_entry(&source, source.is_dir());
+    }
+    ensure_under_root(&root, &destination)?;
+    if destination.exists() {
+        return Err(file_error(
+            "exists",
+            "A file or folder already exists with that name in the target folder",
+        ));
+    }
+
+    let is_dir = source.is_dir();
+    fs::rename(&source, &destination)
+        .map_err(|error| file_error("writeFailed", format!("Could not move: {error}")))?;
+    file_entry(&destination, is_dir)
+}
+
+/// "name.ext" -> "name copy.ext", "name copy 2.ext", ... first free slot.
+fn available_copy_path(parent: &Path, source: &Path) -> Result<PathBuf, FileCommandError> {
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| file_error("invalidPath", "Path has no filename"))?;
+    let extension = source.extension().and_then(|value| value.to_str());
+
+    for attempt in 1..100u32 {
+        let base = if attempt == 1 {
+            format!("{stem} copy")
+        } else {
+            format!("{stem} copy {attempt}")
+        };
+        let name = match extension {
+            Some(ext) => format!("{base}.{ext}"),
+            None => base,
+        };
+        let candidate = parent.join(&name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(file_error("exists", "Could not find a free name for the copy"))
+}
+
+const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_SEARCH_RESULTS: usize = 300;
+const MAX_HITS_PER_FILE: usize = 8;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    path: String,
+    line_number: u32,
+    line_text: String,
+}
+
+#[tauri::command]
+pub fn search_workspace_content(
+    registry: State<'_, PtyRegistry>,
+    session_id: String,
+    query: String,
+    max_results: Option<u32>,
+) -> Result<Vec<SearchHit>, FileCommandError> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root = workspace_root(&registry, &session_id)?;
+    let cap = max_results
+        .map(|value| value as usize)
+        .unwrap_or(MAX_SEARCH_RESULTS);
+
+    let mut hits = Vec::new();
+    let mut stack = vec![root.clone()];
+
+    'walk: while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.filter_map(Result::ok) {
+            if hits.len() >= cap {
+                break 'walk;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                if SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if entry
+                .metadata()
+                .map(|meta| meta.len() > MAX_SEARCH_FILE_BYTES)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            if ensure_text_bytes(&bytes).is_err() {
+                continue;
+            }
+            let Ok(contents) = String::from_utf8(bytes) else {
+                continue;
+            };
+
+            let relative = match entry.path().strip_prefix(&root) {
+                Ok(relative) => relative.to_string_lossy().to_string(),
+                Err(_) => continue,
+            };
+
+            let mut file_hits = 0usize;
+            for (index, line) in contents.lines().enumerate() {
+                if !line.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                hits.push(SearchHit {
+                    path: relative.clone(),
+                    line_number: (index + 1) as u32,
+                    line_text: line.trim().chars().take(240).collect(),
+                });
+                file_hits += 1;
+                if file_hits >= MAX_HITS_PER_FILE || hits.len() >= cap {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(hits)
+}
+
 const MAX_RECURSIVE_ENTRIES: usize = 4000;
 
 #[tauri::command]
@@ -516,6 +771,64 @@ pub fn list_files_recursive(
 
     results.sort();
     Ok(results)
+}
+
+const MAX_VAULT_ENTRIES: usize = 8000;
+
+/// Relative paths of markdown documents under the local GenZen OS roots.
+/// Powers the offline-first vault tree; Supabase only decorates titles.
+#[tauri::command]
+pub fn list_vault_files() -> Result<Vec<String>, FileCommandError> {
+    let roots = vault_roots()?;
+    let mut results = Vec::new();
+
+    for root in &roots {
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            if results.len() >= MAX_VAULT_ENTRIES {
+                return Ok(sorted_dedup(results));
+            }
+
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+
+            for entry in entries.filter_map(Result::ok) {
+                if results.len() >= MAX_VAULT_ENTRIES {
+                    break;
+                }
+
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+
+                if file_type.is_dir() {
+                    stack.push(entry.path());
+                } else if file_type.is_file()
+                    && matches!(
+                        entry.path().extension().and_then(|ext| ext.to_str()),
+                        Some("md" | "mdx" | "markdown")
+                    )
+                {
+                    if let Ok(relative) = entry.path().strip_prefix(root) {
+                        results.push(relative.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(sorted_dedup(results))
+}
+
+fn sorted_dedup(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn workspace_root(

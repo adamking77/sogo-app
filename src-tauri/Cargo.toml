@@ -28,6 +28,7 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+trash = "5"
 uuid = { version = "1", features = ["v4"] }
 
 # panic = "abort" is deliberately NOT set: with abort, a panic on any worker

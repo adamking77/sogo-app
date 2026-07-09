@@ -718,6 +718,11 @@ function App() {
         openPalette("files");
         return;
       }
+      if (e.key.toLowerCase() === "f" && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openPalette("search");
+        return;
+      }
 
       if (activeTab && activeEditor?.focusWithin && activeEditor.activePath) {
         if (e.key === "s") {

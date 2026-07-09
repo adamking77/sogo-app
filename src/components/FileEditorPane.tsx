@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { EditorState, type Extension } from "@codemirror/state";
 import {
   drawSelection,
@@ -34,8 +34,11 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useBlurRegion } from "@/lib/blurRegions";
+import { isTauriRuntime } from "@/lib/runtime";
 import { type EditorMode, useEditorStore } from "@/stores/editorStore";
 import { useThemeStore } from "@/stores/themeStore";
+import { useVaultStore } from "@/stores/vaultStore";
+import { toastError } from "@/stores/toastStore";
 
 interface FileEditorPaneProps {
   sessionId: string;
@@ -72,6 +75,21 @@ export function FileEditorPane({
   } = useEditorStore();
 
   const blurRef = useBlurRegion(22);
+
+  const handleWikiLink = useCallback(async (target: string) => {
+    let files = useVaultStore.getState().localFiles;
+    if (!files || files.length === 0) {
+      await useVaultStore.getState().refresh();
+      files = useVaultStore.getState().localFiles;
+    }
+    const resolved = resolveWikiTarget(target, files ?? []);
+    if (!resolved) {
+      toastError(`No GenZen OS document named "${target}"`);
+      return;
+    }
+    await openFile(sessionId, resolved, { source: "vault" });
+  }, [openFile, sessionId]);
+
   const activePath = session?.activePath;
   const dirty = !!session && session.buffer !== session.loadedContent;
   const isMarkdown = !!activePath && /\.(md|mdx|markdown)$/i.test(activePath);
@@ -195,7 +213,7 @@ export function FileEditorPane({
             Loading
           </div>
         ) : isMarkdown && mode === "preview" ? (
-          <MarkdownPreview contents={session.buffer} />
+          <MarkdownPreview contents={session.buffer} onWikiLink={(target) => void handleWikiLink(target)} />
         ) : (
           <CodeMirrorEditor
             path={activePath}
@@ -309,11 +327,135 @@ function InlineNotice({
   );
 }
 
-function MarkdownPreview({ contents }: { contents: string }) {
+/**
+ * Obsidian-style resolution: exact vault-relative path first, then unique
+ * basename match, case-insensitive, .md implied.
+ */
+function resolveWikiTarget(target: string, files: string[]): string | null {
+  const clean = target.replace(/\.(md|mdx|markdown)$/i, "").toLowerCase();
+  if (!clean) return null;
+
+  const exact = files.find(
+    (file) => file.replace(/\.(md|mdx|markdown)$/i, "").toLowerCase() === clean,
+  );
+  if (exact) return exact;
+
+  return (
+    files.find((file) => {
+      const base = (file.split("/").pop() ?? file)
+        .replace(/\.(md|mdx|markdown)$/i, "")
+        .toLowerCase();
+      return base === clean;
+    }) ?? null
+  );
+}
+
+const WIKI_LINK_PROTOCOL = "sogo-wiki:";
+const WIKI_LINK_PATTERN = /\[\[([^\][|]+)(?:\|([^\][]+))?\]\]/g;
+
+/**
+ * Remark plugin turning Obsidian-style [[target]] / [[target|alias]] text
+ * into links with a sogo-wiki: URL. Operates on mdast text nodes only, so
+ * code blocks and inline code stay untouched.
+ */
+function remarkWikiLinks() {
+  interface MdastNode {
+    type: string;
+    value?: string;
+    url?: string;
+    children?: MdastNode[];
+  }
+
+  const transform = (node: MdastNode) => {
+    if (!node.children) return;
+
+    const nextChildren: MdastNode[] = [];
+    let changed = false;
+
+    for (const child of node.children) {
+      if (child.type !== "text" || !child.value || node.type === "link") {
+        transform(child);
+        nextChildren.push(child);
+        continue;
+      }
+
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      WIKI_LINK_PATTERN.lastIndex = 0;
+      const pieces: MdastNode[] = [];
+
+      while ((match = WIKI_LINK_PATTERN.exec(child.value)) !== null) {
+        if (match.index > lastIndex) {
+          pieces.push({ type: "text", value: child.value.slice(lastIndex, match.index) });
+        }
+        const target = match[1].trim();
+        const alias = match[2]?.trim();
+        pieces.push({
+          type: "link",
+          url: `${WIKI_LINK_PROTOCOL}${encodeURIComponent(target)}`,
+          children: [{ type: "text", value: alias || target }],
+        });
+        lastIndex = match.index + match[0].length;
+      }
+
+      if (pieces.length === 0) {
+        nextChildren.push(child);
+        continue;
+      }
+
+      if (lastIndex < child.value.length) {
+        pieces.push({ type: "text", value: child.value.slice(lastIndex) });
+      }
+      nextChildren.push(...pieces);
+      changed = true;
+    }
+
+    if (changed) node.children = nextChildren;
+  };
+
+  return (tree: unknown) => transform(tree as MdastNode);
+}
+
+function MarkdownPreview({
+  contents,
+  onWikiLink,
+}: {
+  contents: string;
+  onWikiLink: (target: string) => void;
+}) {
+  const components = useMemo<Components>(() => ({
+    ...markdownComponents,
+    a: ({ href, children }) => (
+      <a
+        className="text-cc-accent underline decoration-cc-accent/40 underline-offset-2 transition-colors hover:decoration-cc-accent"
+        href={href}
+        onClick={(event) => {
+          if (!href) return;
+          if (href.startsWith(WIKI_LINK_PROTOCOL)) {
+            event.preventDefault();
+            onWikiLink(decodeURIComponent(href.slice(WIKI_LINK_PROTOCOL.length)));
+            return;
+          }
+          if (/^https?:/i.test(href)) {
+            // Never navigate the webview away from the app; hand the URL to
+            // the default browser instead.
+            event.preventDefault();
+            if (!isTauriRuntime()) return;
+            void import("@tauri-apps/api/core").then(({ invoke }) =>
+              invoke("open_path_in_default_app", { path: href }).catch(() => undefined),
+            );
+          }
+        }}
+      >
+        {children}
+      </a>
+    ),
+  }), [onWikiLink]);
+
   return (
     <div className="h-full overflow-y-auto px-12 py-14">
       <div className="markdown-preview mx-auto max-w-[64ch]">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={components}>
           {contents}
         </ReactMarkdown>
       </div>

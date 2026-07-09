@@ -398,7 +398,13 @@ pub fn run() {
             files::create_workspace_file,
             files::create_workspace_directory,
             files::import_paths_into_workspace,
+            files::rename_workspace_path,
+            files::delete_workspace_path,
+            files::duplicate_workspace_path,
+            files::move_workspace_path,
+            files::search_workspace_content,
             files::read_vault_file,
+            files::list_vault_files,
             files::write_vault_file,
             files::list_files_recursive
         ])
