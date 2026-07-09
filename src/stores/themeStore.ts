@@ -165,16 +165,18 @@ export function applyPalette(palette: Palette, backgroundOpacity = useThemeStore
 }
 
 export function applyBackgroundOpacity(backgroundOpacity: number) {
-  document.documentElement.style.setProperty("--cc-app-opacity", String(clampOpacity(backgroundOpacity)));
+  const appOpacity = clampOpacity(backgroundOpacity);
+  document.documentElement.style.setProperty("--cc-app-opacity", String(appOpacity));
+  document.documentElement.style.setProperty("--cc-elevated-opacity", String(Math.max(0.94, appOpacity)));
 }
 
 function readStoredOpacity() {
-  return clampOpacity(Number(localStorage.getItem("sogo.backgroundOpacity") ?? "0.95"));
+  return clampOpacity(Number(localStorage.getItem("sogo.backgroundOpacity") ?? "1"));
 }
 
 function clampOpacity(value: number) {
-  if (!Number.isFinite(value)) return 0.95;
-  return Math.min(1, Math.max(0.7, value));
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0.5, value));
 }
 
 function hexToRgbChannels(hex: string) {

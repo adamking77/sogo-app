@@ -308,7 +308,7 @@ export function TabStrip({
 
       {contextMenu && contextTab ? (
         <div
-          className="sogo-pop sogo-surface-bg fixed z-[60] w-52 rounded-xl border border-cc-border p-1 shadow-2xl"
+          className="sogo-pop sogo-elevated-bg fixed z-[60] w-52 rounded-xl border border-cc-border p-1 shadow-2xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(event) => event.stopPropagation()}
         >

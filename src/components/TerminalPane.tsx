@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
@@ -185,8 +184,7 @@ export function TerminalPane({
     if (!containerRef.current || terminalRef.current) return;
     const container = containerRef.current;
 
-    // The WebGL renderer measures glyphs via canvas font strings, which cannot
-    // resolve CSS variables — resolve --cc-font-mono to a concrete family here.
+    // Resolve --cc-font-mono to a concrete family before xterm measures glyphs.
     const monoVar = getComputedStyle(document.documentElement)
       .getPropertyValue("--cc-font-mono")
       .trim();
@@ -198,6 +196,7 @@ export function TerminalPane({
       convertEol: false,
       scrollback: 20_000,
       allowProposedApi: true,
+      allowTransparency: true,
       theme: terminalTheme(palette, backgroundOpacity),
     });
     const fitAddon = new FitAddon();
@@ -220,20 +219,6 @@ export function TerminalPane({
       createSmartLinkProvider(terminal, copySmartText, openSmartPath),
     );
     terminal.open(container);
-
-    // GPU renderer; falls back to the DOM renderer when WebGL is unavailable
-    // or the context is lost.
-    let webglAddon: WebglAddon | null = null;
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose();
-        webglAddon = null;
-      });
-      terminal.loadAddon(webglAddon);
-    } catch {
-      webglAddon = null;
-    }
 
     const bellDisposable = terminal.onBell(() => {
       callbacksRef.current.onBell(tab.id);
@@ -510,7 +495,7 @@ export function TerminalPane({
     >
       <div ref={containerRef} className={`h-full min-h-0 min-w-0 ${sessionBlocked ? "pointer-events-none" : ""}`} />
       {findOpen ? (
-        <div className="sogo-surface-bg absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border py-1 pl-3 pr-1 shadow-lg">
+        <div className="sogo-elevated-bg absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border py-1 pl-3 pr-1 shadow-lg">
           <input
             ref={findInputRef}
             className="h-6 w-44 bg-transparent font-mono text-xs text-cc-foreground outline-none placeholder:text-cc-muted"
@@ -563,7 +548,7 @@ export function TerminalPane({
             <div className="text-sm font-medium">{tab.label}</div>
             <div className="mt-1 text-xs text-cc-muted">{tab.cwd}</div>
             <button
-              className="mt-4 rounded-md bg-cc-accent px-3 py-1.5 text-xs font-medium text-cc-background"
+              className="mt-4 rounded-full bg-cc-accent px-4 py-1.5 text-xs font-medium text-cc-background shadow-sm transition-colors hover:bg-cc-accent/90"
               onClick={() => {
                 console.info(`[sogo timing] ${tab.label} resume-requested`);
                 onResumeRequested(tab.id);
@@ -724,18 +709,8 @@ function quotePath(path: string): string {
 function terminalTheme(palette: Palette, backgroundOpacity: number): Palette["terminal"] {
   return {
     ...palette.terminal,
-    background: withAlpha(palette.terminal.background, backgroundOpacity),
+    background: backgroundOpacity < 1 ? "rgba(0, 0, 0, 0)" : palette.terminal.background,
   };
-}
-
-function withAlpha(color: string, alpha: number) {
-  const normalized = color.replace("#", "");
-  if (normalized.length !== 6) return color;
-  const value = Number.parseInt(normalized, 16);
-  const red = (value >> 16) & 255;
-  const green = (value >> 8) & 255;
-  const blue = value & 255;
-  return `rgba(${red}, ${green}, ${blue}, ${Math.min(1, Math.max(0.7, alpha))})`;
 }
 
 function isFilesPanelDrop(physicalX: number, physicalY: number) {

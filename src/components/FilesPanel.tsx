@@ -255,7 +255,7 @@ export function FilesPanel({
 
   if (!folderChosen) {
     return (
-      <section className="sogo-surface-bg flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
+      <section className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
         <p className="text-xs text-cc-muted">Open a folder session to browse files.</p>
       </section>
     );
@@ -267,7 +267,7 @@ export function FilesPanel({
   return (
     <section
       ref={panelRef}
-      className="sogo-surface-bg flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 flex-1 flex-col"
       data-sogo-files-panel="true"
       data-sogo-drop-dir={cwd}
     >
@@ -556,7 +556,7 @@ function FileActionsMenu({
 
   return createPortal(
     <div
-      className="sogo-pop sogo-surface-bg fixed z-[70] w-[224px] rounded-xl border border-cc-border p-1 shadow-2xl"
+      className="sogo-pop sogo-elevated-bg fixed z-[70] w-[224px] rounded-xl border border-cc-border p-1 shadow-2xl"
       style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
     >

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from
 import { Loader2, Pencil, RefreshCw, X } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
+import { useBlurRegion } from "@/lib/blurRegions";
 import type { GitChange } from "@/types";
 
 interface DiffPaneProps {
@@ -63,9 +64,13 @@ export function DiffPane({
   }, [lines]);
 
   const deleted = change.status.trim().startsWith("D");
+  const blurRef = useBlurRegion(22);
 
   return (
-    <aside className="file-editor-pane relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border bg-cc-background shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]">
+    <aside
+      ref={blurRef}
+      className="file-editor-pane sogo-background-bg relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]"
+    >
       <div
         className="group/resize absolute inset-y-0 left-0 z-30 w-3 cursor-col-resize"
         onMouseDown={(event) => {
@@ -83,7 +88,7 @@ export function DiffPane({
         onMouseDown={onDragMouseDown}
       />
       <div
-        className="flex h-10 shrink-0 items-center justify-between bg-cc-surface/60 px-3 text-xs text-cc-muted"
+        className="flex h-10 shrink-0 items-center justify-between px-3 text-xs text-cc-muted"
         data-tauri-drag-region
         onMouseDown={onDragMouseDown}
       >

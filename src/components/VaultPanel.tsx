@@ -92,7 +92,7 @@ export function VaultPanel({ onOpenDocument, activePath }: VaultPanelProps) {
   }, [filter, tree]);
 
   return (
-    <section className="sogo-surface-bg flex min-h-0 flex-1 shrink flex-col">
+    <section className="flex min-h-0 flex-1 shrink flex-col">
       <div className="flex h-10 items-center justify-between px-3">
         <h2 className="text-sm font-semibold">GenZen OS</h2>
         <span className="text-[11px] tabular-nums text-cc-muted">{visibleDocuments.length}</span>

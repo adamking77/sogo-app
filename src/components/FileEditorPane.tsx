@@ -33,6 +33,7 @@ import {
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { useBlurRegion } from "@/lib/blurRegions";
 import { type EditorMode, useEditorStore } from "@/stores/editorStore";
 import { useThemeStore } from "@/stores/themeStore";
 
@@ -70,6 +71,7 @@ export function FileEditorPane({
     openFile,
   } = useEditorStore();
 
+  const blurRef = useBlurRegion(22);
   const activePath = session?.activePath;
   const dirty = !!session && session.buffer !== session.loadedContent;
   const isMarkdown = !!activePath && /\.(md|mdx|markdown)$/i.test(activePath);
@@ -86,7 +88,8 @@ export function FileEditorPane({
 
   return (
     <aside
-      className="file-editor-pane relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border bg-cc-background shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]"
+      ref={blurRef}
+      className="file-editor-pane sogo-background-bg relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]"
       onFocusCapture={() => setFocusWithin(sessionId, true)}
       onBlurCapture={(event) => {
         if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
@@ -112,7 +115,7 @@ export function FileEditorPane({
         onMouseDown={onDragMouseDown}
       />
       <div
-        className="flex h-10 shrink-0 items-center justify-between bg-cc-surface/60 px-3 text-xs text-cc-muted"
+        className="flex h-10 shrink-0 items-center justify-between px-3 text-xs text-cc-muted"
         data-tauri-drag-region
         onMouseDown={onDragMouseDown}
       >
@@ -536,7 +539,7 @@ function buildEditorTheme(fontPx: number) {
   return EditorView.theme({
     "&": {
       height: "100%",
-      backgroundColor: "rgb(var(--cc-background-rgb))",
+      backgroundColor: "transparent",
       color: "rgb(var(--cc-foreground-rgb))",
       fontSize: `${fontPx}px`,
       caretColor: "rgb(var(--cc-foreground-rgb))",
@@ -566,7 +569,7 @@ function buildEditorTheme(fontPx: number) {
       borderLeftColor: "rgb(var(--cc-foreground-rgb))",
     },
     ".cm-gutters": {
-      backgroundColor: "rgb(var(--cc-background-rgb))",
+      backgroundColor: "transparent",
       borderRight: "none",
       color: "rgba(var(--cc-muted-rgb) / 0.3)",
     },

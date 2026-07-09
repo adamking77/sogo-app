@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   BookOpen,
   Check,
@@ -20,11 +21,16 @@ import {
 } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
+import { useBlurRegion } from "@/lib/blurRegions";
 import { toastError, toastSuccess } from "@/stores/toastStore";
 import { palettes, useThemeStore, type PalettePreference } from "@/stores/themeStore";
 import type { SogoTab } from "@/types";
 
 export type PanelName = "files" | "vault" | "skills" | "changes";
+
+const SETTINGS_POPOVER_WIDTH = 256;
+const SETTINGS_POPOVER_ESTIMATED_HEIGHT = 388;
+const SETTINGS_POPOVER_MARGIN = 8;
 
 /**
  * Bare session status at the bottom-left of the terminal card: dot, state,
@@ -117,7 +123,7 @@ export function StatusStrip({
 
       {stoppedCount > 0 ? (
         <button
-          className="flex shrink-0 items-center gap-1.5 text-[10.5px] text-cc-muted transition-colors hover:text-cc-foreground"
+          className="flex h-6 shrink-0 items-center gap-1.5 rounded-full bg-cc-surface-strong/55 px-2.5 text-[10.5px] text-cc-muted transition-colors hover:bg-cc-surface-strong hover:text-cc-foreground"
           onClick={onResumeAll}
           title={`Resume ${stoppedCount} stopped session${stoppedCount > 1 ? "s" : ""}`}
         >
@@ -164,8 +170,14 @@ export function ControlRail({
   onToggleTabs: () => void;
   onOpenPalette: () => void;
 }) {
+  const hasSessionControls = running || hasTab;
+  const blurRef = useBlurRegion("pill");
+
   return (
-    <aside className="sogo-panel-in sogo-surface-bg flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]">
+    <aside
+      ref={blurRef}
+      className="sogo-panel-in sogo-elevated-bg flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]"
+    >
       <RailButton label="New session (⌘N)" onClick={onNewTab}>
         <Plus size={14} />
       </RailButton>
@@ -191,24 +203,30 @@ export function ControlRail({
         <Sparkles size={13} />
       </RailButton>
 
-      <RailDivider />
+      {hasSessionControls ? (
+        <>
+          <RailDivider />
 
-      {running ? (
-        <RailButton label="Interrupt Claude (sends Ctrl+C)" onClick={onStop}>
-          <Square size={10} strokeWidth={2.5} />
-        </RailButton>
-      ) : null}
-      {hasTab ? (
-        <RailButton
-          label={confirmingClose ? "Click again to close the session" : "Close session"}
-          danger={confirmingClose}
-          onClick={onRequestClose}
-        >
-          <X size={13} />
-        </RailButton>
-      ) : null}
+          {running ? (
+            <RailButton label="Interrupt Claude (sends Ctrl+C)" onClick={onStop}>
+              <Square size={10} strokeWidth={2.5} />
+            </RailButton>
+          ) : null}
+          {hasTab ? (
+            <RailButton
+              label={confirmingClose ? "Click again to close the session" : "Close session"}
+              danger={confirmingClose}
+              onClick={onRequestClose}
+            >
+              <X size={13} />
+            </RailButton>
+          ) : null}
 
-      <RailDivider />
+          <RailDivider />
+        </>
+      ) : (
+        <RailDivider />
+      )}
 
       <RailSettingsPopover tabsCollapsed={tabsCollapsed} onToggleTabs={onToggleTabs} />
       <RailButton label={pinned ? "Unpin" : "Pin on top"} active={pinned} onClick={onTogglePin}>
@@ -262,19 +280,58 @@ function RailSettingsPopover({
   const { preference, fontSize, backgroundOpacity, setPreference, setFontSize, setBackgroundOpacity } = useThemeStore();
   const [open, setOpen] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState<boolean | null>(null);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [popoverPosition, setPopoverPosition] = useState({ left: SETTINGS_POPOVER_MARGIN, top: SETTINGS_POPOVER_MARGIN });
+
+  const updatePopoverPosition = useCallback(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+
+    const rect = anchor.getBoundingClientRect();
+    const left = Math.max(
+      SETTINGS_POPOVER_MARGIN,
+      Math.min(
+        window.innerWidth - SETTINGS_POPOVER_WIDTH - SETTINGS_POPOVER_MARGIN,
+        Math.max(SETTINGS_POPOVER_MARGIN, rect.right - SETTINGS_POPOVER_WIDTH),
+      ),
+    );
+    const preferredTop = rect.top - SETTINGS_POPOVER_ESTIMATED_HEIGHT - SETTINGS_POPOVER_MARGIN;
+    const fallbackTop = rect.bottom + SETTINGS_POPOVER_MARGIN;
+    const availableFallbackTop = window.innerHeight - SETTINGS_POPOVER_ESTIMATED_HEIGHT - SETTINGS_POPOVER_MARGIN;
+    const top = preferredTop >= SETTINGS_POPOVER_MARGIN ? preferredTop : Math.min(fallbackTop, availableFallbackTop);
+
+    setPopoverPosition({
+      left,
+      top: Math.max(SETTINGS_POPOVER_MARGIN, top),
+    });
+  }, []);
 
   useEffect(() => {
     if (!open) return;
 
+    updatePopoverPosition();
+
     const close = (event: MouseEvent) => {
       if (popoverRef.current?.contains(event.target as Node)) return;
+      if (anchorRef.current?.contains(event.target as Node)) return;
       setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
     };
 
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
+    };
+  }, [open, updatePopoverPosition]);
 
   useEffect(() => {
     if (!open || !isTauriRuntime() || hooksEnabled !== null) return;
@@ -301,23 +358,29 @@ function RailSettingsPopover({
     { id: "system", label: "System" },
     ...Object.values(palettes).map((palette) => ({ id: palette.name as PalettePreference, label: palette.label })),
   ];
+  const transparency = Math.round((1 - backgroundOpacity) * 100);
 
   return (
-    <div ref={popoverRef} className="relative shrink-0">
+    <div ref={anchorRef} className="relative shrink-0">
       <RailButton label="Settings" active={open} onClick={() => setOpen((current) => !current)}>
         <Settings2 size={12} />
       </RailButton>
-      {open ? (
-        <div className="sogo-pop sogo-surface-bg absolute bottom-9 right-0 z-50 w-64 rounded-xl border border-cc-border p-3 shadow-2xl">
+      {open
+        ? createPortal(
+          <div
+            ref={popoverRef}
+            className="sogo-pop sogo-elevated-bg fixed z-[120] w-64 rounded-xl border border-cc-border p-3 shadow-2xl"
+            style={{ left: popoverPosition.left, top: popoverPosition.top }}
+          >
           <div className="mb-2 text-xs font-medium text-cc-foreground">Settings</div>
           <div className="space-y-3">
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wide text-cc-muted">Theme</div>
-              <div className="grid grid-cols-3 gap-1 rounded-lg bg-cc-background/60 p-1">
+              <div className="grid grid-cols-3 gap-1 rounded-full bg-cc-background/60 p-1">
                 {themeOptions.map((option) => (
                   <button
                     key={option.id}
-                    className={`rounded-md px-1.5 py-1 text-[10px] ${
+                    className={`rounded-full px-1.5 py-1 text-[10px] ${
                       preference === option.id
                         ? "bg-cc-surface-strong text-cc-foreground"
                         : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
@@ -331,11 +394,11 @@ function RailSettingsPopover({
             </div>
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wide text-cc-muted">Text size</div>
-              <div className="grid grid-cols-3 gap-1 rounded-lg bg-cc-background/60 p-1">
+              <div className="grid grid-cols-3 gap-1 rounded-full bg-cc-background/60 p-1">
                 {(["small", "medium", "large"] as const).map((size) => (
                   <button
                     key={size}
-                    className={`rounded-md px-1.5 py-1 text-[10px] capitalize ${
+                    className={`rounded-full px-1.5 py-1 text-[10px] capitalize ${
                       fontSize === size
                         ? "bg-cc-surface-strong text-cc-foreground"
                         : "text-cc-muted hover:bg-cc-surface-strong/70 hover:text-cc-foreground"
@@ -349,18 +412,18 @@ function RailSettingsPopover({
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide text-cc-muted">
-                <span>Background</span>
-                <span className="font-mono">{Math.round(backgroundOpacity * 100)}%</span>
+                <span>Transparency</span>
+                <span className="font-mono">{transparency}%</span>
               </div>
               <input
                 type="range"
-                min="70"
-                max="100"
+                min="0"
+                max="50"
                 step="1"
-                value={Math.round(backgroundOpacity * 100)}
+                value={transparency}
                 className="w-full accent-cc-accent"
-                onChange={(event) => setBackgroundOpacity(Number(event.currentTarget.value) / 100)}
-                aria-label="Background opacity"
+                onChange={(event) => setBackgroundOpacity(1 - Number(event.currentTarget.value) / 100)}
+                aria-label="App transparency"
               />
             </div>
             <div>
@@ -388,8 +451,10 @@ function RailSettingsPopover({
               {tabsCollapsed ? "Show tab strip" : "Hide tab strip"}
             </button>
           </div>
-        </div>
-      ) : null}
+          </div>,
+          document.body,
+        )
+        : null}
     </div>
   );
 }

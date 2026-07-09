@@ -31,7 +31,7 @@ export function ChangesPanel({ sessionId, folderChosen, activeDiffPath, onOpenDi
 
   if (!folderChosen) {
     return (
-      <section className="sogo-surface-bg flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
+      <section className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center">
         <p className="text-xs text-cc-muted">Open a folder session to see git changes.</p>
       </section>
     );
@@ -40,7 +40,7 @@ export function ChangesPanel({ sessionId, folderChosen, activeDiffPath, onOpenDi
   const changes = state?.changes ?? [];
 
   return (
-    <section className="sogo-surface-bg flex min-h-0 flex-1 flex-col">
+    <section className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center justify-between px-3">
         <h2 className="text-sm font-semibold">Changes</h2>
         <div className="flex items-center gap-1.5">

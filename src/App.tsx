@@ -15,6 +15,7 @@ import { ToastHost } from "@/components/ToastHost";
 import { VaultPanel } from "@/components/VaultPanel";
 import { notifyUser, setAttentionBadge } from "@/lib/notifications";
 import { isTauriRuntime } from "@/lib/runtime";
+import { useBlurRegion } from "@/lib/blurRegions";
 import {
   FILE_EDITOR_DEFAULT_WIDTH,
   PANE_GAP,
@@ -94,6 +95,7 @@ function App() {
   const setEditorMode = useEditorStore((state) => state.setMode);
   const gitBySession = useGitStore((state) => state.bySession);
   const tauriRuntime = isTauriRuntime();
+  const mainPaneBlurRef = useBlurRegion(20);
 
   useEffect(() => {
     applyPalette(palette, backgroundOpacity);
@@ -362,6 +364,22 @@ function App() {
 
   const prevPanelOpenRef = useRef<boolean>(!!activePanel);
   const hasGrownForEditorRef = useRef<boolean>(false);
+
+  // Grow/shrink the window when the sidebar opens/closes.
+  useEffect(() => {
+    if (!tauriRuntime) return;
+
+    const prevPanel = prevPanelOpenRef.current;
+    const panelOpened = !prevPanel && !!activePanel;
+    const panelClosed = prevPanel && !activePanel;
+    prevPanelOpenRef.current = !!activePanel;
+
+    if (!panelOpened && !panelClosed) return;
+
+    const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
+    const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
+    void adjustWindowWidth(tauriRuntime, deltaW, minW);
+  }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
 
   const growForEditor = useCallback(async () => {
     if (hasGrownForEditorRef.current) return;
@@ -677,22 +695,6 @@ function App() {
     setFileEditorLayout((current) => (current === "ejected" ? "overlay" : "ejected"));
   }, []);
 
-  // Grow/shrink the window when the sidebar opens/closes.
-  useEffect(() => {
-    if (!tauriRuntime) return;
-
-    const prevPanel = prevPanelOpenRef.current;
-    const panelOpened = !prevPanel && !!activePanel;
-    const panelClosed = prevPanel && !activePanel;
-    prevPanelOpenRef.current = !!activePanel;
-
-    if (!panelOpened && !panelClosed) return;
-
-    const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
-    const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
-    void adjustWindowWidth(tauriRuntime, deltaW, minW);
-  }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
-
   const openPalette = useCallback((mode: PaletteMode = "all") => {
     setPalette({ open: true, mode });
   }, []);
@@ -860,9 +862,11 @@ function App() {
   }, [activePanel, pinned, tabsCollapsed, stoppedTabs.length, tauriRuntime, toggleSidebar, toggleTabs, resumeAll, setPreference]);
 
   return (
-    <div className="relative flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
-      <div className="flex min-h-0 w-full flex-1 gap-2">
-      <div
+    <div className="relative isolate flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
+      <div className="relative z-10 min-h-0 w-full flex-1">
+        <div className="relative z-10 flex h-full min-h-0 w-full gap-2">
+          <div
+        ref={mainPaneBlurRef}
         className={`sogo-background-bg relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border ${
           ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
         }`}
@@ -880,7 +884,7 @@ function App() {
           onDoubleClick={() => runWindowAction("zoom")}
         />
         <header
-          className="sogo-surface-bg flex h-10 shrink-0 items-center"
+          className="flex h-10 shrink-0 items-center"
           data-tauri-drag-region
           onMouseDown={dragHandler}
           onDoubleClick={(event) => {
@@ -930,7 +934,7 @@ function App() {
             className="flex min-w-0 flex-1 flex-col"
             style={{ minWidth: editorVisible && !ejectedEditorActive ? terminalMinWidth : 0 }}
           >
-            <div className="sogo-background-bg relative min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
               {tabs.length === 0 ? (
                 <EmptyState
                   runtimeReady={tauriRuntime}
@@ -1056,10 +1060,10 @@ function App() {
           />
         ) : null}
 
-      </div>
+          </div>
 
-      {activeTab && editorVisible && ejectedEditorActive ? (
-        <div
+          {activeTab && editorVisible && ejectedEditorActive ? (
+            <div
           className="relative z-10 h-full min-h-0 min-w-0 flex-1"
           style={{ minWidth: FILE_EDITOR_MIN_WIDTH }}
           data-tauri-drag-region
@@ -1094,11 +1098,11 @@ function App() {
             title="Resize window"
             aria-label="Resize window"
           />
-        </div>
-      ) : null}
+            </div>
+          ) : null}
 
-      {activePanel && !compact ? (
-        <PanelWindow
+          {activePanel && !compact ? (
+            <PanelWindow
           activePanel={activePanel}
           onClose={() => setActivePanel(null)}
           tauriRuntime={tauriRuntime}
@@ -1128,12 +1132,13 @@ function App() {
               onOpenFile={(path) => void openActiveFile(path)}
             />
           )}
-        </PanelWindow>
-      ) : null}
+            </PanelWindow>
+          ) : null}
+        </div>
       </div>
 
       {!compact ? (
-        <div className="flex shrink-0 justify-center">
+        <div className="relative z-20 flex shrink-0 justify-center">
           <ControlRail
             activePanel={activePanel}
             pinned={pinned}
@@ -1190,7 +1195,7 @@ function TrafficLights({
   };
 
   const lightClass = (color: string, text: string) =>
-    `flex h-3 w-3 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-colors duration-200 hover:opacity-95 ${
+    `flex h-3 w-3 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-colors duration-200 ${
       focused ? `${color} ${text}` : "bg-[#57534e]/50 text-transparent"
     }`;
 
@@ -1255,9 +1260,11 @@ function PanelWindow({
   children: ReactNode;
 }) {
   const dragHandler = useDragHandler(tauriRuntime);
+  const blurRef = useBlurRegion(20);
 
   return (
     <aside
+      ref={blurRef}
       className="sogo-panel-in sogo-surface-bg relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border"
       style={{
         width: RIGHT_SIDEBAR_WIDTH,
@@ -1303,7 +1310,7 @@ function QuitConfirm({
   return (
     <div className="absolute inset-0 z-[70] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/30" onMouseDown={onCancel} />
-      <div className="sogo-pop sogo-surface-bg relative w-80 rounded-2xl border border-cc-border p-5 shadow-2xl">
+      <div className="sogo-pop sogo-elevated-bg relative w-80 rounded-2xl border border-cc-border p-5 shadow-2xl">
         <div className="text-sm font-medium text-cc-foreground">Quit Sogo?</div>
         <p className="mt-1.5 text-xs leading-5 text-cc-muted">
           {runningCount} running Claude session{runningCount === 1 ? "" : "s"} will stop. Sessions resume where they left off next time.
@@ -1341,7 +1348,7 @@ function EmptyState({
   onOpenRecent: (folder: string) => void;
 }) {
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background">
+    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="m-auto w-full max-w-md px-10 py-12">
         <div className="font-mono text-[11px] text-cc-muted/70">
           <span className="text-cc-accent">sogo</span>
