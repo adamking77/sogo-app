@@ -34,6 +34,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useBlurRegion } from "@/lib/blurRegions";
+import { markdownLivePreview } from "@/lib/markdownLivePreview";
 import { isTauriRuntime } from "@/lib/runtime";
 import { type EditorMode, useEditorStore } from "@/stores/editorStore";
 import { useThemeStore } from "@/stores/themeStore";
@@ -664,6 +665,7 @@ function editorExtensions(path: string, fontPx: number): Extension[] {
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
     buildEditorTheme(fontPx),
     ...(language ? [language] : []),
+    ...(isMarkdownFile ? [markdownLivePreview()] : []),
   ];
 }
 
