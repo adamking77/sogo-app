@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, FolderSearch, Plus, SquareX, TextCursorInput, X } from "lucide-react";
 
 import { statusDotClass } from "@/components/PillBar";
+import { catppuccinAccentFor } from "@/lib/accents";
 import type { SogoTab } from "@/types";
 
 interface TabStripProps {
@@ -200,6 +201,7 @@ export function TabStrip({
           const editing = editingTabId === tab.id;
           const needsAttention = tab.status === "awaiting-input";
           const isActive = tab.id === activeTabId;
+          const accent = catppuccinAccentFor(tab.id);
 
           return (
           <div
@@ -208,12 +210,13 @@ export function TabStrip({
             tabIndex={0}
             data-tab-index={index}
             aria-selected={isActive}
+            style={{ "--tab-rgb": accent } as React.CSSProperties}
             className={`group flex h-7 max-w-44 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-left text-xs transition ${
               isActive
-                ? "border-cc-border bg-cc-surface-strong text-cc-foreground"
+                ? "border-[rgb(var(--tab-rgb)_/_0.4)] bg-[rgb(var(--tab-rgb)_/_0.14)] text-cc-foreground"
                 : needsAttention
                   ? "sogo-attention-pill border-amber-300/50 bg-amber-400/10 text-cc-foreground"
-                  : "border-transparent text-cc-muted hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+                  : "border-transparent text-cc-muted hover:border-[rgb(var(--tab-rgb)_/_0.2)] hover:bg-[rgb(var(--tab-rgb)_/_0.09)] hover:text-cc-foreground"
             } ${draggingId === tab.id ? "opacity-70" : ""}`}
             onClick={() => {
               if (dragRef.current?.moved || draggingId) return;
@@ -247,6 +250,10 @@ export function TabStrip({
               <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-cc-background/70 font-mono text-[9px] text-cc-muted">
                 {index + 1}
               </span>
+            ) : tab.status === "idle" ? (
+              // Idle carries no urgency, so the dot doubles as the tab's identity color.
+              // Busy / awaiting-input / error keep their status colors — those need to read at a glance.
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[rgb(var(--tab-rgb))]" />
             ) : (
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(tab.status)}`} />
             )}

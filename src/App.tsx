@@ -13,6 +13,7 @@ import { TabStrip } from "@/components/TabStrip";
 import { TerminalPane } from "@/components/TerminalPane";
 import { ToastHost } from "@/components/ToastHost";
 import { VaultPanel } from "@/components/VaultPanel";
+import { catppuccinAccentFor } from "@/lib/accents";
 import { notifyUser, setAttentionBadge } from "@/lib/notifications";
 import { isTauriRuntime } from "@/lib/runtime";
 import {
@@ -1334,32 +1335,6 @@ function QuitConfirm({
   );
 }
 
-// Catppuccin Mocha accent palette (RGB triplets), used to tint recent-folder chips.
-const CATPPUCCIN_ACCENTS = [
-  "245 224 220", // rosewater
-  "242 205 205", // flamingo
-  "245 194 231", // pink
-  "203 166 247", // mauve
-  "243 139 168", // red
-  "235 160 172", // maroon
-  "250 179 135", // peach
-  "249 226 175", // yellow
-  "166 227 161", // green
-  "148 226 213", // teal
-  "137 220 235", // sky
-  "116 199 236", // sapphire
-  "137 180 250", // blue
-  "180 190 254", // lavender
-];
-
-function catppuccinAccentFor(text: string): string {
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash * 31 + text.charCodeAt(i)) | 0;
-  }
-  return CATPPUCCIN_ACCENTS[Math.abs(hash) % CATPPUCCIN_ACCENTS.length];
-}
-
 function EmptyState({
   runtimeReady,
   recentFolders,
@@ -1391,7 +1366,7 @@ function EmptyState({
 
         <div className="mt-7 flex flex-wrap items-center gap-2">
           <button
-            className="flex h-8 items-center gap-1.5 rounded-full border border-cc-border bg-cc-surface-strong px-3.5 text-xs text-cc-foreground transition-colors hover:bg-cc-surface-strong/70"
+            className="flex h-8 items-center gap-1.5 rounded-full bg-[#cba6f7] px-3.5 text-xs font-medium text-[#11111b] transition-colors hover:bg-[#b4befe] active:bg-[#cba6f7]"
             onClick={onNewTab}
           >
             <Play size={12} />
@@ -1399,7 +1374,7 @@ function EmptyState({
           </button>
           {runtimeReady ? (
             <button
-              className="flex h-8 items-center gap-1.5 rounded-full border border-transparent px-3.5 text-xs text-cc-muted transition-colors hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+              className="flex h-8 items-center gap-1.5 rounded-full border border-[#94e2d5]/50 px-3.5 text-xs text-[#94e2d5] transition-colors hover:border-[#94e2d5] hover:bg-[#94e2d5]/15 hover:text-[#a6f0e3]"
               onClick={onNewFolderTab}
             >
               <FolderOpen size={12} />
