@@ -15,7 +15,6 @@ import { ToastHost } from "@/components/ToastHost";
 import { VaultPanel } from "@/components/VaultPanel";
 import { notifyUser, setAttentionBadge } from "@/lib/notifications";
 import { isTauriRuntime } from "@/lib/runtime";
-import { useBlurRegion } from "@/lib/blurRegions";
 import {
   FILE_EDITOR_DEFAULT_WIDTH,
   PANE_GAP,
@@ -95,7 +94,6 @@ function App() {
   const setEditorMode = useEditorStore((state) => state.setMode);
   const gitBySession = useGitStore((state) => state.bySession);
   const tauriRuntime = isTauriRuntime();
-  const mainPaneBlurRef = useBlurRegion(20);
 
   useEffect(() => {
     applyPalette(palette, backgroundOpacity);
@@ -871,7 +869,6 @@ function App() {
       <div className="relative z-10 min-h-0 w-full flex-1">
         <div className="relative z-10 flex h-full min-h-0 w-full gap-2">
           <div
-        ref={mainPaneBlurRef}
         className={`sogo-background-bg relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border ${
           ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
         }`}
@@ -1265,11 +1262,9 @@ function PanelWindow({
   children: ReactNode;
 }) {
   const dragHandler = useDragHandler(tauriRuntime);
-  const blurRef = useBlurRegion(20);
 
   return (
     <aside
-      ref={blurRef}
       className="sogo-panel-in sogo-surface-bg relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border"
       style={{
         width: RIGHT_SIDEBAR_WIDTH,

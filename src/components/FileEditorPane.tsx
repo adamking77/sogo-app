@@ -33,7 +33,6 @@ import {
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { useBlurRegion } from "@/lib/blurRegions";
 import { markdownLivePreview } from "@/lib/markdownLivePreview";
 import { isTauriRuntime } from "@/lib/runtime";
 import { type EditorMode, useEditorStore } from "@/stores/editorStore";
@@ -75,7 +74,6 @@ export function FileEditorPane({
     openFile,
   } = useEditorStore();
 
-  const blurRef = useBlurRegion(22);
 
   const handleWikiLink = useCallback(async (target: string) => {
     let files = useVaultStore.getState().localFiles;
@@ -107,7 +105,6 @@ export function FileEditorPane({
 
   return (
     <aside
-      ref={blurRef}
       className="file-editor-pane sogo-background-bg relative flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-cc-border shadow-[-30px_18px_72px_-30px_rgba(0,0,0,0.6),-2px_0_8px_-3px_rgba(0,0,0,0.35)]"
       onFocusCapture={() => setFocusWithin(sessionId, true)}
       onBlurCapture={(event) => {

@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 
 import { isTauriRuntime } from "@/lib/runtime";
-import { useBlurRegion } from "@/lib/blurRegions";
 import { toastError, toastSuccess } from "@/stores/toastStore";
 import { palettes, useThemeStore, type PalettePreference } from "@/stores/themeStore";
 import type { SogoTab } from "@/types";
@@ -171,11 +170,9 @@ export function ControlRail({
   onOpenPalette: () => void;
 }) {
   const hasSessionControls = running || hasTab;
-  const blurRef = useBlurRegion("pill");
 
   return (
     <aside
-      ref={blurRef}
       className="sogo-panel-in sogo-elevated-bg flex shrink-0 items-center gap-0.5 rounded-full border border-cc-border px-2 py-1.5 shadow-[0_18px_44px_-24px_rgba(0,0,0,0.75)]"
     >
       <RailButton label="New session (⌘N)" onClick={onNewTab}>

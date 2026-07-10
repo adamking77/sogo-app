@@ -1,6 +1,5 @@
 mod files;
 mod git;
-mod macos_blur;
 mod pty;
 mod watch;
 
@@ -39,7 +38,6 @@ fn request_quit(app: &tauri::AppHandle) {
 fn show_or_create_main_window(app: &tauri::AppHandle, reason: &str) {
     if let Some(window) = app.get_webview_window("main") {
         eprintln!("[sogo lifecycle] showing existing main window reason={reason}");
-        macos_blur::install(&window);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -60,7 +58,6 @@ fn show_or_create_main_window(app: &tauri::AppHandle, reason: &str) {
 
     match WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build()) {
         Ok(window) => {
-            macos_blur::install(&window);
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
@@ -69,17 +66,6 @@ fn show_or_create_main_window(app: &tauri::AppHandle, reason: &str) {
             eprintln!("[sogo lifecycle] failed to recreate main window: {error}");
         }
     }
-}
-
-/// Frontend reports the rounded rects (panes, control rail) that should show
-/// the native desktop blur; anything outside stays fully transparent.
-#[tauri::command]
-fn set_blur_regions(
-    window: tauri::WebviewWindow,
-    regions: Vec<macos_blur::BlurRegion>,
-    enabled: bool,
-) {
-    macos_blur::update(&window, regions, enabled);
 }
 
 #[derive(Debug, Serialize)]
@@ -347,9 +333,6 @@ pub fn run() {
             });
             watch::start_hook_events_watch(&app.handle().clone());
             app.set_menu(build_app_menu(app.handle())?)?;
-            if let Some(window) = app.get_webview_window("main") {
-                macos_blur::install(&window);
-            }
             Ok(())
         })
         // A window close request (native menu, AppleScript, anything) must
@@ -380,7 +363,6 @@ pub fn run() {
             pty::session_active,
             pty::session_summary,
             default_session_cwd,
-            set_blur_regions,
             save_pasted_image,
             read_runtime_config,
             read_claude_inventory,

@@ -61,9 +61,8 @@ select {
   background: linear-gradient(to bottom, rgba(var(--cc-surface-rgb) / 0.18), transparent 82px);
 }
 
-/* Desktop-level blur comes from a native NSVisualEffectView masked to the
-   blur regions reported by src/lib/blurRegions.ts — CSS backdrop-filter
-   cannot sample behind the window, so background/surface stay filter-free. */
+/* Plain alpha over the transparent window: no filter, because CSS
+   backdrop-filter cannot sample anything behind the window. */
 .sogo-background-bg {
   background-color: rgba(var(--cc-background-rgb) / var(--cc-app-opacity));
 }
