@@ -13,6 +13,7 @@ import { TabStrip } from "@/components/TabStrip";
 import { TerminalPane } from "@/components/TerminalPane";
 import { ToastHost } from "@/components/ToastHost";
 import { VaultPanel } from "@/components/VaultPanel";
+import { catppuccinAccentFor } from "@/lib/accents";
 import { notifyUser, setAttentionBadge } from "@/lib/notifications";
 import { isTauriRuntime } from "@/lib/runtime";
 import {
@@ -83,7 +84,7 @@ function App() {
   const [windowFocused, setWindowFocused] = useState(true);
   const [innerWidth, setInnerWidth] = useState(window.innerWidth);
   const closeConfirmTimerRef = useRef<number | undefined>();
-  const { fontSize, setPreference } = useThemeStore();
+  const { fontSize, backgroundOpacity, setPreference } = useThemeStore();
   const palette = useResolvedPalette();
   const editorSessions = useEditorStore((state) => state.sessions);
   const openFile = useEditorStore((state) => state.openFile);
@@ -96,8 +97,8 @@ function App() {
   const tauriRuntime = isTauriRuntime();
 
   useEffect(() => {
-    applyPalette(palette);
-  }, [palette]);
+    applyPalette(palette, backgroundOpacity);
+  }, [palette, backgroundOpacity]);
 
   useEffect(() => {
     const onResize = () => setInnerWidth(window.innerWidth);
@@ -234,7 +235,7 @@ function App() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const cwd = await invoke<string>("default_session_cwd");
-      addTab(cwd, { label: `Scratch ${tabs.length + 1}`, folderChosen: false });
+      addTab(cwd, { label: `Session ${tabs.length + 1}`, folderChosen: false });
     } catch (error) {
       toastError(`Could not start a Claude session: ${String(error)}`);
     }
@@ -277,11 +278,16 @@ function App() {
       }
 
       setDiffByTab((current) => ({ ...current, [id]: undefined }));
+      removeTab(id);
       if (tauriRuntime) {
+        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+          const appWindow = getCurrentWindow();
+          void appWindow.show();
+          void appWindow.setFocus();
+        }).catch(() => undefined);
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("close_session", { sessionId: id }).catch(() => undefined);
       }
-      removeTab(id);
     },
     [removeTab, setActiveTabId, tauriRuntime],
   );
@@ -296,22 +302,11 @@ function App() {
       const tab = tabs.find((candidate) => candidate.id === id);
       if (!tab) return;
       const running = tab.started && (tab.status === "busy" || tab.status === "awaiting-input" || tab.status === "idle");
-
-      if (running) {
-        // Second request (e.g. ⌘W twice) confirms.
-        if (confirmingCloseTabId === id) {
-          cancelCloseConfirm();
-          void closeTab(id);
-          return;
-        }
-        setConfirmingCloseTabId(id);
-        window.clearTimeout(closeConfirmTimerRef.current);
-        closeConfirmTimerRef.current = window.setTimeout(() => setConfirmingCloseTabId(null), 3500);
-      } else {
-        void closeTab(id);
-      }
+      console.info(`[sogo lifecycle] tab-close id=${id} label=${tab.label} status=${tab.status} started=${!!tab.started} running=${running}`);
+      cancelCloseConfirm();
+      void closeTab(id);
     },
-    [tabs, confirmingCloseTabId, cancelCloseConfirm, closeTab],
+    [tabs, cancelCloseConfirm, closeTab],
   );
 
   const confirmCloseTab = useCallback(() => {
@@ -351,12 +346,39 @@ function App() {
 
   const resumeAll = useCallback(() => {
     for (const tab of stoppedTabs) {
+      console.info(`[sogo timing] ${tab.label} resume-all-requested`);
       updateTab(tab.id, { started: true, status: "busy" });
     }
   }, [stoppedTabs, updateTab]);
 
+  const resumeTab = useCallback(
+    (tabId: string) => {
+      const tab = useSessionStore.getState().tabs.find((candidate) => candidate.id === tabId);
+      console.info(`[sogo timing] resume-request tab=${tabId} status=${tab?.status ?? "missing"} started=${!!tab?.started}`);
+      updateTab(tabId, { started: true, status: "busy" });
+      setActiveTabId(tabId);
+    },
+    [setActiveTabId, updateTab],
+  );
+
   const prevPanelOpenRef = useRef<boolean>(!!activePanel);
   const hasGrownForEditorRef = useRef<boolean>(false);
+
+  // Grow/shrink the window when the sidebar opens/closes.
+  useEffect(() => {
+    if (!tauriRuntime) return;
+
+    const prevPanel = prevPanelOpenRef.current;
+    const panelOpened = !prevPanel && !!activePanel;
+    const panelClosed = prevPanel && !activePanel;
+    prevPanelOpenRef.current = !!activePanel;
+
+    if (!panelOpened && !panelClosed) return;
+
+    const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
+    const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
+    void adjustWindowWidth(tauriRuntime, deltaW, minW);
+  }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
 
   const growForEditor = useCallback(async () => {
     if (hasGrownForEditorRef.current) return;
@@ -381,7 +403,7 @@ function App() {
   const openVaultDocument = useCallback(
     async (sourcePath: string) => {
       if (!activeTab) {
-        toastError("Start a session before opening a vault document.");
+        toastError("Start a session before opening a GenZen OS document.");
         return;
       }
 
@@ -594,7 +616,7 @@ function App() {
     });
   }, []);
 
-  // Auto-title scratch tabs from the Claude session summary once they go idle.
+  // Auto-title local sessions from the Claude session summary once they go idle.
   const prevStatusesRef = useRef<Record<string, SogoTab["status"]>>({});
   useEffect(() => {
     if (!tauriRuntime) return;
@@ -672,22 +694,6 @@ function App() {
     setFileEditorLayout((current) => (current === "ejected" ? "overlay" : "ejected"));
   }, []);
 
-  // Grow/shrink the window when the sidebar opens/closes.
-  useEffect(() => {
-    if (!tauriRuntime) return;
-
-    const prevPanel = prevPanelOpenRef.current;
-    const panelOpened = !prevPanel && !!activePanel;
-    const panelClosed = prevPanel && !activePanel;
-    prevPanelOpenRef.current = !!activePanel;
-
-    if (!panelOpened && !panelClosed) return;
-
-    const deltaW = panelOpened ? RIGHT_SIDEBAR_WIDTH + PANE_GAP : -(RIGHT_SIDEBAR_WIDTH + PANE_GAP);
-    const minW = getWindowMinWidth(editorVisible, !!activePanel, fileEditorLayout);
-    void adjustWindowWidth(tauriRuntime, deltaW, minW);
-  }, [activePanel, editorVisible, fileEditorLayout, tauriRuntime]);
-
   const openPalette = useCallback((mode: PaletteMode = "all") => {
     setPalette({ open: true, mode });
   }, []);
@@ -709,6 +715,11 @@ function App() {
       if (e.key === "p" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         openPalette("files");
+        return;
+      }
+      if (e.key.toLowerCase() === "f" && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openPalette("search");
         return;
       }
 
@@ -743,6 +754,7 @@ function App() {
       }
       if (e.key === "w") {
         e.preventDefault();
+        console.info(`[sogo lifecycle] cmd-w activeTab=${activeTab?.id ?? "none"} diff=${!!activeDiff} editorFocus=${!!activeEditor?.focusWithin}`);
         if (activeDiff) {
           closeDiff();
           return;
@@ -756,8 +768,8 @@ function App() {
         setActiveTabId(tabs[digit - 1].id);
       }
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [
     newTab,
     requestCloseTab,
@@ -802,7 +814,7 @@ function App() {
       {
         id: "toggle-sidebar",
         label: activePanel ? "Hide sidebar" : "Show sidebar",
-        keywords: "sidebar panel toggle files vault skills changes",
+        keywords: "sidebar panel toggle files genzen os skills changes",
         icon: <FolderOpen size={13} />,
         run: toggleSidebar,
       },
@@ -854,10 +866,11 @@ function App() {
   }, [activePanel, pinned, tabsCollapsed, stoppedTabs.length, tauriRuntime, toggleSidebar, toggleTabs, resumeAll, setPreference]);
 
   return (
-    <div className="relative flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
-      <div className="flex min-h-0 w-full flex-1 gap-2">
-      <div
-        className={`relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-background/95 ${
+    <div className="relative isolate flex h-full w-full flex-col gap-2 bg-transparent text-cc-foreground">
+      <div className="relative z-10 min-h-0 w-full flex-1">
+        <div className="relative z-10 flex h-full min-h-0 w-full gap-2">
+          <div
+        className={`sogo-background-bg relative flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-border ${
           ejectedEditorActive ? "shrink-0 shadow-[-18px_18px_58px_-34px_rgba(0,0,0,0.72)]" : "flex-1"
         }`}
         style={{
@@ -874,7 +887,7 @@ function App() {
           onDoubleClick={() => runWindowAction("zoom")}
         />
         <header
-          className="flex h-10 shrink-0 items-center bg-cc-surface/80"
+          className="flex h-10 shrink-0 items-center"
           data-tauri-drag-region
           onMouseDown={dragHandler}
           onDoubleClick={(event) => {
@@ -924,7 +937,7 @@ function App() {
             className="flex min-w-0 flex-1 flex-col"
             style={{ minWidth: editorVisible && !ejectedEditorActive ? terminalMinWidth : 0 }}
           >
-            <div className="relative min-h-0 flex-1 bg-[color:var(--cc-background)]">
+            <div className="relative min-h-0 flex-1">
               {tabs.length === 0 ? (
                 <EmptyState
                   runtimeReady={tauriRuntime}
@@ -942,10 +955,12 @@ function App() {
                       active={tab.id === activeTab?.id}
                       palette={palette}
                       fontSize={FONT_SIZE[fontSize]}
+                      backgroundOpacity={backgroundOpacity}
                       onData={handleTerminalData}
                       onExit={handleTerminalExit}
                       onError={handleTerminalError}
-                      onStarted={(tabId) => updateTab(tabId, { started: true, status: "busy" })}
+                      onResumeRequested={resumeTab}
+                      onSpawnStarted={(tabId) => updateTab(tabId, { started: true, status: "busy" })}
                       onSessionId={handleSessionId}
                       onBell={handleBell}
                       onOpenFile={(path) => void openActiveFile(path)}
@@ -1048,10 +1063,10 @@ function App() {
           />
         ) : null}
 
-      </div>
+          </div>
 
-      {activeTab && editorVisible && ejectedEditorActive ? (
-        <div
+          {activeTab && editorVisible && ejectedEditorActive ? (
+            <div
           className="relative z-10 h-full min-h-0 min-w-0 flex-1"
           style={{ minWidth: FILE_EDITOR_MIN_WIDTH }}
           data-tauri-drag-region
@@ -1086,11 +1101,11 @@ function App() {
             title="Resize window"
             aria-label="Resize window"
           />
-        </div>
-      ) : null}
+            </div>
+          ) : null}
 
-      {activePanel && !compact ? (
-        <PanelWindow
+          {activePanel && !compact ? (
+            <PanelWindow
           activePanel={activePanel}
           onClose={() => setActivePanel(null)}
           tauriRuntime={tauriRuntime}
@@ -1120,12 +1135,13 @@ function App() {
               onOpenFile={(path) => void openActiveFile(path)}
             />
           )}
-        </PanelWindow>
-      ) : null}
+            </PanelWindow>
+          ) : null}
+        </div>
       </div>
 
       {!compact ? (
-        <div className="flex shrink-0 justify-center">
+        <div className="relative z-20 flex shrink-0 justify-center">
           <ControlRail
             activePanel={activePanel}
             pinned={pinned}
@@ -1182,7 +1198,7 @@ function TrafficLights({
   };
 
   const lightClass = (color: string, text: string) =>
-    `flex h-3 w-3 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-colors duration-200 hover:opacity-95 ${
+    `flex h-3 w-3 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.18)] transition-colors duration-200 ${
       focused ? `${color} ${text}` : "bg-[#57534e]/50 text-transparent"
     }`;
 
@@ -1231,7 +1247,7 @@ function TrafficLights({
 const PANEL_TITLES: Record<PanelName, string> = {
   files: "Files",
   changes: "Changes",
-  vault: "Vault",
+  vault: "GenZen OS",
   skills: "Skills",
 };
 
@@ -1250,7 +1266,7 @@ function PanelWindow({
 
   return (
     <aside
-      className="sogo-panel-in relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border bg-cc-surface/95"
+      className="sogo-panel-in sogo-surface-bg relative flex h-full shrink-0 flex-col overflow-hidden rounded-[20px] border border-cc-border"
       style={{
         width: RIGHT_SIDEBAR_WIDTH,
         minWidth: RIGHT_SIDEBAR_WIDTH,
@@ -1295,7 +1311,7 @@ function QuitConfirm({
   return (
     <div className="absolute inset-0 z-[70] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/30" onMouseDown={onCancel} />
-      <div className="sogo-pop relative w-80 rounded-2xl border border-cc-border bg-cc-surface p-5 shadow-2xl">
+      <div className="sogo-pop sogo-elevated-bg relative w-80 rounded-2xl border border-cc-border p-5 shadow-2xl">
         <div className="text-sm font-medium text-cc-foreground">Quit Sogo?</div>
         <p className="mt-1.5 text-xs leading-5 text-cc-muted">
           {runningCount} running Claude session{runningCount === 1 ? "" : "s"} will stop. Sessions resume where they left off next time.
@@ -1333,7 +1349,7 @@ function EmptyState({
   onOpenRecent: (folder: string) => void;
 }) {
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto bg-cc-background">
+    <div className="relative flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="m-auto w-full max-w-md px-10 py-12">
         <div className="font-mono text-[11px] text-cc-muted/70">
           <span className="text-cc-accent">sogo</span>
@@ -1345,12 +1361,12 @@ function EmptyState({
           Ready when you are.
         </h1>
         <p className="mt-3 max-w-sm text-[13.5px] leading-[1.7] text-cc-muted">
-          Sogo wraps Claude Code as a native macOS app. Start a scratch session or open a project folder.
+          Sogo wraps Claude Code as a native macOS app. Start a session or open a project folder.
         </p>
 
         <div className="mt-7 flex flex-wrap items-center gap-2">
           <button
-            className="flex h-8 items-center gap-1.5 rounded-full border border-cc-border bg-cc-surface-strong px-3.5 text-xs text-cc-foreground transition-colors hover:bg-cc-surface-strong/70"
+            className="flex h-8 items-center gap-1.5 rounded-full bg-[#cba6f7] px-3.5 text-xs font-medium text-[#11111b] transition-colors hover:bg-[#b4befe] active:bg-[#cba6f7]"
             onClick={onNewTab}
           >
             <Play size={12} />
@@ -1358,7 +1374,7 @@ function EmptyState({
           </button>
           {runtimeReady ? (
             <button
-              className="flex h-8 items-center gap-1.5 rounded-full border border-transparent px-3.5 text-xs text-cc-muted transition-colors hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+              className="flex h-8 items-center gap-1.5 rounded-full border border-[#94e2d5]/50 px-3.5 text-xs text-[#94e2d5] transition-colors hover:border-[#94e2d5] hover:bg-[#94e2d5]/15 hover:text-[#a6f0e3]"
               onClick={onNewFolderTab}
             >
               <FolderOpen size={12} />
@@ -1374,11 +1390,12 @@ function EmptyState({
               {recentFolders.slice(0, 5).map((folder) => (
                 <button
                   key={folder}
-                  className="flex h-7 max-w-full items-center gap-1.5 rounded-full border border-cc-border/70 px-2.5 font-mono text-[10.5px] text-cc-muted transition-colors hover:bg-cc-surface-strong/60 hover:text-cc-foreground"
+                  style={{ "--chip-rgb": catppuccinAccentFor(folder) } as React.CSSProperties}
+                  className="flex h-7 max-w-full items-center gap-1.5 rounded-full border border-[rgb(var(--chip-rgb)_/_0.35)] px-2.5 font-mono text-[10.5px] text-cc-muted transition-colors hover:border-[rgb(var(--chip-rgb)_/_0.6)] hover:bg-[rgb(var(--chip-rgb)_/_0.1)] hover:text-cc-foreground"
                   onClick={() => onOpenRecent(folder)}
                   title={folder}
                 >
-                  <History size={10} />
+                  <History size={10} className="shrink-0 text-[rgb(var(--chip-rgb))]" />
                   <span className="truncate">{folder.split("/").filter(Boolean).pop()}</span>
                 </button>
               ))}

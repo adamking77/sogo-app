@@ -40,7 +40,7 @@ export function SkillsPanel({ sessionRunning, onActivateSkill }: SkillsPanelProp
   }, [loadInventory]);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-cc-surface">
+    <section className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center justify-between px-3">
         <h2 className="text-sm font-semibold">Skills</h2>
         <button

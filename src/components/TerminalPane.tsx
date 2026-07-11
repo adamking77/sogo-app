@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
@@ -27,10 +26,12 @@ interface TerminalPaneProps {
   active: boolean;
   palette: Palette;
   fontSize: number;
+  backgroundOpacity: number;
   onData: (tabId: string, text: string) => void;
   onExit: (tabId: string) => void;
   onError: (tabId: string, error: string) => void;
-  onStarted: (tabId: string) => void;
+  onResumeRequested: (tabId: string) => void;
+  onSpawnStarted: (tabId: string) => void;
   onSessionId: (tabId: string, claudeSessionId: string) => void;
   onBell: (tabId: string) => void;
   onOpenFile: (path: string) => void;
@@ -65,10 +66,12 @@ export function TerminalPane({
   active,
   palette,
   fontSize,
+  backgroundOpacity,
   onData,
   onExit,
   onError,
-  onStarted,
+  onResumeRequested,
+  onSpawnStarted,
   onSessionId,
   onBell,
   onOpenFile,
@@ -92,11 +95,11 @@ export function TerminalPane({
     lastInputAt?: number;
     awaitingResponse?: boolean;
   }>({});
-  const callbacksRef = useRef({ onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile });
+  const callbacksRef = useRef({ onData, onExit, onError, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile });
 
   useEffect(() => {
-    callbacksRef.current = { onData, onExit, onError, onStarted, onSessionId, onBell, onOpenFile };
-  }, [onData, onError, onExit, onSessionId, onStarted, onBell, onOpenFile]);
+    callbacksRef.current = { onData, onExit, onError, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile };
+  }, [onData, onError, onExit, onResumeRequested, onSpawnStarted, onSessionId, onBell, onOpenFile]);
 
   const copySmartText = useCallback(
     (text: string) => {
@@ -181,8 +184,7 @@ export function TerminalPane({
     if (!containerRef.current || terminalRef.current) return;
     const container = containerRef.current;
 
-    // The WebGL renderer measures glyphs via canvas font strings, which cannot
-    // resolve CSS variables — resolve --cc-font-mono to a concrete family here.
+    // Resolve --cc-font-mono to a concrete family before xterm measures glyphs.
     const monoVar = getComputedStyle(document.documentElement)
       .getPropertyValue("--cc-font-mono")
       .trim();
@@ -194,7 +196,8 @@ export function TerminalPane({
       convertEol: false,
       scrollback: 20_000,
       allowProposedApi: true,
-      theme: palette.terminal,
+      allowTransparency: true,
+      theme: terminalTheme(palette, backgroundOpacity),
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -216,20 +219,6 @@ export function TerminalPane({
       createSmartLinkProvider(terminal, copySmartText, openSmartPath),
     );
     terminal.open(container);
-
-    // GPU renderer; falls back to the DOM renderer when WebGL is unavailable
-    // or the context is lost.
-    let webglAddon: WebglAddon | null = null;
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose();
-        webglAddon = null;
-      });
-      terminal.loadAddon(webglAddon);
-    } catch {
-      webglAddon = null;
-    }
 
     const bellDisposable = terminal.onBell(() => {
       callbacksRef.current.onBell(tab.id);
@@ -311,9 +300,9 @@ export function TerminalPane({
         fitFrameRef.current = null;
       }
       container.removeEventListener("paste", handlePaste, true);
-      bellDisposable.dispose();
-      smartLinkProvider.dispose();
-      terminal.dispose();
+      safeDispose("bell", () => bellDisposable.dispose());
+      safeDispose("smart-link-provider", () => smartLinkProvider.dispose());
+      safeDispose("terminal", () => terminal.dispose());
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
@@ -336,6 +325,7 @@ export function TerminalPane({
           if (cancelled || event.payload.type !== "drop") return;
           const paths = event.payload.paths;
           if (!paths || paths.length === 0) return;
+          if (isFilesPanelDrop(event.payload.position.x, event.payload.position.y)) return;
           writeToPty(`${paths.map(quotePath).join(" ")} `);
           terminalRef.current?.focus();
         });
@@ -347,6 +337,20 @@ export function TerminalPane({
       unlisten?.();
     };
   }, [active, tab.id, writeToPty]);
+
+  // Paths dragged from the files tree land here (pointer-based drag; HTML5
+  // DnD is unavailable with the native drag-drop handler enabled).
+  useEffect(() => {
+    if (!active) return;
+    const onInsertPath = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail;
+      if (!path) return;
+      writeToPty(`${quotePath(path)} `);
+      terminalRef.current?.focus();
+    };
+    window.addEventListener("sogo:insert-terminal-path", onInsertPath);
+    return () => window.removeEventListener("sogo:insert-terminal-path", onInsertPath);
+  }, [active, writeToPty]);
 
   // Refocus requests (after skill activation, editor close, palette actions).
   useEffect(() => {
@@ -407,12 +411,12 @@ export function TerminalPane({
     if (!terminal) return;
 
     terminal.options.fontSize = fontSize;
-    terminal.options.theme = palette.terminal;
+    terminal.options.theme = terminalTheme(palette, backgroundOpacity);
     if (active) {
       scheduleFit();
       terminal.focus();
     }
-  }, [active, fontSize, palette.terminal, scheduleFit]);
+  }, [active, backgroundOpacity, fontSize, palette, scheduleFit]);
 
   useEffect(() => {
     if (tab.status === "stopped" || tab.status === "error") {
@@ -455,7 +459,7 @@ export function TerminalPane({
         firstByte: false,
       };
       logTiming(tab, "spawn-start", `cwd=${tab.cwd}`);
-      callbacksRef.current.onStarted(tab.id);
+      callbacksRef.current.onSpawnStarted(tab.id);
       const dimensions = fitAddonRef.current?.proposeDimensions();
       // The tab id doubles as the Claude session id: the backend passes
       // --session-id on first run and --resume when the session file exists.
@@ -481,7 +485,9 @@ export function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [active, tab.cwd, tab.id, tab.started]);
+  }, [active, tab.claudeSessionId, tab.cwd, tab.id, tab.started]);
+
+  const sessionBlocked = (tab.status === "stopped" || tab.status === "error") && !tab.started;
 
   const runFind = useCallback((query: string, direction: "next" | "previous") => {
     const searchAddon = searchAddonRef.current;
@@ -501,9 +507,9 @@ export function TerminalPane({
       className={active ? "session-terminal-shell relative h-full min-h-0 min-w-0" : "hidden"}
       data-session-id={tab.id}
     >
-      <div ref={containerRef} className="h-full min-h-0 min-w-0" />
+      <div ref={containerRef} className={`h-full min-h-0 min-w-0 ${sessionBlocked ? "pointer-events-none" : ""}`} />
       {findOpen ? (
-        <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border bg-cc-surface/95 py-1 pl-3 pr-1 shadow-lg">
+        <div className="sogo-elevated-bg absolute right-3 top-3 z-30 flex items-center gap-1 rounded-full border border-cc-border py-1 pl-3 pr-1 shadow-lg">
           <input
             ref={findInputRef}
             className="h-6 w-44 bg-transparent font-mono text-xs text-cc-foreground outline-none placeholder:text-cc-muted"
@@ -548,17 +554,19 @@ export function TerminalPane({
           </button>
         </div>
       ) : null}
-      {(tab.status === "stopped" || tab.status === "error") && !tab.started ? (
-        // z-30 keeps this above xterm's link-layer canvas, which carries a
-        // positive z-index and would otherwise swallow clicks while staying
-        // visually transparent.
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-cc-background/90">
+      {sessionBlocked ? (
+        // z-[70] and pointer-events ownership keep this above xterm's link
+        // layer and every app overlay except modal dialogs.
+        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-cc-background/90 pointer-events-auto">
           <div className="max-w-sm text-center">
             <div className="text-sm font-medium">{tab.label}</div>
             <div className="mt-1 text-xs text-cc-muted">{tab.cwd}</div>
             <button
-              className="mt-4 rounded-md bg-cc-accent px-3 py-1.5 text-xs font-medium text-cc-background"
-              onClick={() => onStarted(tab.id)}
+              className="mt-4 rounded-full bg-cc-accent px-4 py-1.5 text-xs font-medium text-cc-background shadow-sm transition-colors hover:bg-cc-accent/90"
+              onClick={() => {
+                console.info(`[sogo timing] ${tab.label} resume-requested`);
+                onResumeRequested(tab.id);
+              }}
             >
               {tab.status === "error" ? "Retry session" : "Resume session"}
             </button>
@@ -571,6 +579,14 @@ export function TerminalPane({
 
 function logTiming(tab: SogoTab, event: string, detail: string) {
   console.info(`[sogo timing] ${tab.label} ${event}: ${detail}`);
+}
+
+function safeDispose(label: string, dispose: () => void) {
+  try {
+    dispose();
+  } catch (error) {
+    console.warn(`[sogo lifecycle] ignored ${label} dispose error`, error);
+  }
 }
 
 function formatDelta(label: string, value?: number) {
@@ -702,6 +718,19 @@ async function copyTextToClipboard(text: string) {
 function quotePath(path: string): string {
   // Single-quote so spaces survive; escape any embedded single quotes.
   return `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+function terminalTheme(palette: Palette, backgroundOpacity: number): Palette["terminal"] {
+  return {
+    ...palette.terminal,
+    background: backgroundOpacity < 1 ? "rgba(0, 0, 0, 0)" : palette.terminal.background,
+  };
+}
+
+function isFilesPanelDrop(physicalX: number, physicalY: number) {
+  const scale = window.devicePixelRatio || 1;
+  const element = document.elementFromPoint(physicalX / scale, physicalY / scale);
+  return !!element?.closest("[data-sogo-files-panel='true']");
 }
 
 function decodeBase64(data: string): Uint8Array {

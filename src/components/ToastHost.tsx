@@ -20,7 +20,7 @@ export function ToastHost() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="sogo-pop pointer-events-auto flex max-w-full items-center gap-2.5 rounded-full border border-cc-border bg-cc-surface/95 py-1.5 pl-3.5 pr-1.5 text-xs shadow-xl"
+          className="sogo-pop sogo-elevated-bg pointer-events-auto flex max-w-full items-center gap-2.5 rounded-full border border-cc-border py-1.5 pl-3.5 pr-1.5 text-xs shadow-xl"
         >
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[toast.tone]}`} />
           <span className="min-w-0 flex-1 truncate text-cc-foreground" title={toast.message}>

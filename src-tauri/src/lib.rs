@@ -12,7 +12,7 @@ use std::{
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WebviewWindowBuilder};
 
 /// Set once the user confirms quitting through the in-app dialog, so the
 /// ExitRequested handler lets the app terminate.
@@ -24,6 +24,7 @@ const QUIT_MENU_ID: &str = "sogo-quit";
 /// Claude session is running, otherwise surface the in-app confirm dialog.
 fn request_quit(app: &tauri::AppHandle) {
     let has_sessions = app.state::<pty::PtyRegistry>().has_active_sessions();
+    eprintln!("[sogo lifecycle] menu quit requested has_sessions={has_sessions}");
     if !has_sessions {
         QUIT_CONFIRMED.store(true, Ordering::SeqCst);
         app.exit(0);
@@ -31,9 +32,39 @@ fn request_quit(app: &tauri::AppHandle) {
     }
 
     let _ = app.emit("sogo://exit-requested", ());
+    show_or_create_main_window(app, "quit-confirm");
+}
+
+fn show_or_create_main_window(app: &tauri::AppHandle, reason: &str) {
     if let Some(window) = app.get_webview_window("main") {
+        eprintln!("[sogo lifecycle] showing existing main window reason={reason}");
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
+        return;
+    }
+
+    eprintln!("[sogo lifecycle] main window missing; recreating reason={reason}");
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+    else {
+        eprintln!("[sogo lifecycle] cannot recreate main window: config label main missing");
+        return;
+    };
+
+    match WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build()) {
+        Ok(window) => {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        Err(error) => {
+            eprintln!("[sogo lifecycle] failed to recreate main window: {error}");
+        }
     }
 }
 
@@ -42,6 +73,7 @@ fn request_quit(app: &tauri::AppHandle) {
 struct RuntimeConfig {
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    intellizen_local_access_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +109,10 @@ fn read_runtime_config() -> RuntimeConfig {
         supabase_anon_key: env::var("SOGO_SUPABASE_ANON_KEY")
             .or_else(|_| env::var("SUPABASE_ANON_KEY"))
             .ok(),
+        intellizen_local_access_key: env::var("SOGO_INTELLIZEN_LOCAL_ACCESS_KEY")
+            .or_else(|_| env::var("INTELLIZEN_LOCAL_ACCESS_KEY"))
+            .or_else(|_| env::var("VITE_INTELLIZEN_LOCAL_ACCESS_KEY"))
+            .ok(),
     }
 }
 
@@ -103,6 +139,20 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("Finder could not reveal: {path}"))
+    }
+}
+
+#[tauri::command]
+fn open_path_in_default_app(path: String) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .arg(&path)
+        .status()
+        .map_err(|error| format!("Could not run open: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Default app could not open: {path}"))
     }
 }
 
@@ -290,12 +340,17 @@ pub fn run() {
         // ExitRequested + confirm_quit below.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                eprintln!(
+                    "[sogo lifecycle] CloseRequested window={} -> hide",
+                    window.label()
+                );
                 api.prevent_close();
                 let _ = window.hide();
             }
         })
         .on_menu_event(|app, event| {
             if event.id() == QUIT_MENU_ID {
+                eprintln!("[sogo lifecycle] custom quit menu event");
                 request_quit(app);
             }
         })
@@ -312,6 +367,7 @@ pub fn run() {
             read_runtime_config,
             read_claude_inventory,
             reveal_in_finder,
+            open_path_in_default_app,
             confirm_quit,
             watch::enable_claude_hooks,
             watch::claude_hooks_status,
@@ -321,7 +377,16 @@ pub fn run() {
             files::read_text_file,
             files::stat_file,
             files::write_text_file,
+            files::create_workspace_file,
+            files::create_workspace_directory,
+            files::import_paths_into_workspace,
+            files::rename_workspace_path,
+            files::delete_workspace_path,
+            files::duplicate_workspace_path,
+            files::move_workspace_path,
+            files::search_workspace_content,
             files::read_vault_file,
+            files::list_vault_files,
             files::write_vault_file,
             files::list_files_recursive
         ])
@@ -332,27 +397,25 @@ pub fn run() {
             // block the exit and let the frontend show the quit confirm; the
             // confirm_quit command flips QUIT_CONFIRMED and exits for real.
             tauri::RunEvent::ExitRequested { api, code, .. } => {
+                eprintln!(
+                    "[sogo lifecycle] ExitRequested code={:?} quit_confirmed={}",
+                    code,
+                    QUIT_CONFIRMED.load(Ordering::SeqCst)
+                );
                 if code.is_none() && !QUIT_CONFIRMED.load(Ordering::SeqCst) {
-                    let has_sessions = app_handle
-                        .state::<pty::PtyRegistry>()
-                        .has_active_sessions();
+                    let has_sessions = app_handle.state::<pty::PtyRegistry>().has_active_sessions();
+                    eprintln!("[sogo lifecycle] ExitRequested active_sessions={has_sessions}");
                     if has_sessions {
                         api.prevent_exit();
                         let _ = app_handle.emit("sogo://exit-requested", ());
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        show_or_create_main_window(app_handle, "exit-confirm");
                     }
                 }
             }
             // Dock icon clicked while the window is hidden — bring it back.
             tauri::RunEvent::Reopen { .. } => {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                eprintln!("[sogo lifecycle] Reopen");
+                show_or_create_main_window(app_handle, "dock-reopen");
             }
             _ => {}
         });
@@ -368,9 +431,7 @@ fn confirm_quit(app: tauri::AppHandle) {
 /// submenus. When the webview doesn't consume ⌘W the accelerator closes the
 /// real window. This menu is the default minus every close_window item (and
 /// the File submenu that only held one); Edit keeps the clipboard bindings.
-fn build_app_menu(
-    handle: &tauri::AppHandle,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
 
     let pkg_info = handle.package_info();
@@ -383,9 +444,10 @@ fn build_app_menu(
     // PredefinedMenuItem::quit sends NSApp `terminate:`, which tao cannot
     // intercept (no applicationShouldTerminate handler) — it would bypass the
     // quit confirm entirely. Use a custom item routed through on_menu_event.
-    let quit_item = tauri::menu::MenuItemBuilder::with_id(QUIT_MENU_ID, format!("Quit {}", pkg_info.name))
-        .accelerator("CmdOrCtrl+Q")
-        .build(handle)?;
+    let quit_item =
+        tauri::menu::MenuItemBuilder::with_id(QUIT_MENU_ID, format!("Quit {}", pkg_info.name))
+            .accelerator("CmdOrCtrl+Q")
+            .build(handle)?;
 
     let app_menu = Submenu::with_items(
         handle,

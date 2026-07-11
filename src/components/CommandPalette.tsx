@@ -17,7 +17,13 @@ import type { ReactNode } from "react";
 import { isTauriRuntime } from "@/lib/runtime";
 import type { ClaudeInventory, SogoTab } from "@/types";
 
-export type PaletteMode = "all" | "files";
+export type PaletteMode = "all" | "files" | "search";
+
+interface SearchHit {
+  path: string;
+  lineNumber: number;
+  lineText: string;
+}
 
 export interface PaletteCommand {
   id: string;
@@ -79,6 +85,8 @@ export function CommandPalette({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [files, setFiles] = useState<string[] | null>(null);
   const [skills, setSkills] = useState<ClaudeInventory["skills"]>([]);
+  const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -112,6 +120,44 @@ export function CommandPalette({
     };
   }, [open, sessionId, folderChosen]);
 
+  // Content search: debounce keystrokes, one backend grep per settled query.
+  useEffect(() => {
+    if (mode !== "search" || !open) {
+      setSearchHits(null);
+      setSearching(false);
+      return;
+    }
+    const trimmed = query.trim();
+    if (trimmed.length < 2 || !isTauriRuntime() || !sessionId || !folderChosen) {
+      setSearchHits(null);
+      setSearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void import("@tauri-apps/api/core").then(({ invoke }) => {
+        void invoke<SearchHit[]>("search_workspace_content", { sessionId, query: trimmed })
+          .then((hits) => {
+            if (cancelled) return;
+            setSearchHits(hits);
+            setSearching(false);
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setSearchHits([]);
+            setSearching(false);
+          });
+      });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [mode, open, query, sessionId, folderChosen]);
+
   useEffect(() => {
     if (!open || !isTauriRuntime() || skills.length > 0) return;
 
@@ -139,13 +185,25 @@ export function CommandPalette({
 
     if (mode === "files") return fileItems;
 
+    if (mode === "search") {
+      return (searchHits ?? []).map((hit): PaletteItem => ({
+        id: `search:${hit.path}:${hit.lineNumber}`,
+        section: "Results",
+        label: hit.lineText,
+        hint: `${hit.path}:${hit.lineNumber}`,
+        keywords: `${hit.path} ${hit.lineText}`,
+        icon: <FileText size={13} />,
+        run: wrapped(() => onOpenFile(hit.path)),
+      }));
+    }
+
     const actionItems: PaletteItem[] = [
       {
         id: "action:new-session",
         section: "Actions",
-        label: "New scratch session",
+        label: "New session",
         hint: "⌘N",
-        keywords: "new scratch session claude start",
+        keywords: "new session claude start",
         icon: <Play size={13} />,
         run: wrapped(onNewSession),
       },
@@ -214,11 +272,16 @@ export function CommandPalette({
     onOpenRecentFolder,
     onSelectTab,
     recentFolders,
+    searchHits,
     skills,
     tabs,
   ]);
 
   const results = useMemo(() => {
+    // Search results are already ranked by the backend; fuzzy re-scoring
+    // against the query would just shuffle them.
+    if (mode === "search") return items.slice(0, 50);
+
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) {
       // Without a query, files are noise in "all" mode; show curated sections.
@@ -280,13 +343,19 @@ export function CommandPalette({
       }}
     >
       <div className="absolute inset-0 bg-black/25" onMouseDown={onClose} />
-      <div className="sogo-pop relative flex w-[560px] max-w-[calc(100%-48px)] flex-col overflow-hidden rounded-2xl border border-cc-border bg-cc-surface shadow-2xl">
+      <div className="sogo-pop sogo-elevated-bg relative flex w-[560px] max-w-[calc(100%-48px)] flex-col overflow-hidden rounded-2xl border border-cc-border shadow-2xl">
         <div className="flex items-center gap-2.5 border-b border-cc-border/60 px-4">
           <Search size={14} className="shrink-0 text-cc-muted" />
           <input
             ref={inputRef}
             className="h-11 min-w-0 flex-1 bg-transparent text-sm text-cc-foreground outline-none placeholder:text-cc-muted"
-            placeholder={mode === "files" ? "Open file…" : "Type a command, tab, folder, skill, or file…"}
+            placeholder={
+              mode === "files"
+                ? "Open file…"
+                : mode === "search"
+                  ? "Search in files…"
+                  : "Type a command, tab, folder, skill, or file…"
+            }
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
@@ -296,7 +365,15 @@ export function CommandPalette({
         <div ref={listRef} className="max-h-[380px] min-h-0 overflow-y-auto p-1.5">
           {results.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-cc-muted">
-              {mode === "files" && files === null ? "Indexing files…" : "No matches."}
+              {mode === "files" && files === null
+                ? "Indexing files…"
+                : mode === "search"
+                  ? searching
+                    ? "Searching…"
+                    : query.trim().length < 2
+                      ? "Type at least two characters to search file contents."
+                      : "No matches."
+                  : "No matches."}
             </div>
           ) : (
             results.map((item, index) => {

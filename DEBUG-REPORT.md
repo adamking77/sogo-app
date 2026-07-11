@@ -1,6 +1,46 @@
 # Debug Report — 2026-07-05: "App closes / won't reopen" + "Resume unclickable"
 
-## STATUS: NOT RESOLVED FOR ADAM — HANDED OFF TO CODEX
+## Codex follow-up — 2026-07-05 19:40
+
+Codex verified the installed `/Applications/Sogo Desktop.app` binary matched the
+repo release binary before making changes, so the stale-binary theory was no
+longer sufficient for any remaining repro.
+
+Additional hardening applied:
+- Resume now has an explicit `onResumeRequested` path separate from the internal
+  PTY spawn-start callback.
+- The stopped/error overlay now owns pointer events, disables xterm pointer
+  handling while visible, and sits at `z-[70]`.
+- The spawn effect now depends on `tab.claudeSessionId`, removing a stale-resume
+  edge after the backend resolves a fresh Claude ID.
+- `⌘W` is handled in capture phase so xterm/focused controls cannot let the
+  native app lifecycle see it first.
+- Rust lifecycle logging now records custom quit, close-request, exit-request,
+  reopen, and main-window restore/recreate paths.
+- Dock reopen now recreates the configured `main` window if it ever went
+  missing instead of doing nothing.
+- Frontend `destroy()` permission was removed from Tauri capabilities.
+
+Verification:
+- `pnpm check` passed.
+- `cargo test` passed: 17 tests.
+- `pnpm tauri build` passed and produced both release bundles.
+- `/Applications/Sogo Desktop.app` was replaced with the freshly built app.
+- Installed binary, release binary, and bundled app binary all have SHA-256
+  `f80e095e4e1a443bb760efcaebcfb40dba1cced8c4a429cfc5b6eb0e80c10005`.
+- Installed app launch/quit smoke test passed, with no Sogo process left
+  running afterward.
+
+If the issue still reproduces, launch from a terminal and preserve stderr:
+
+```bash
+"/Applications/Sogo Desktop.app/Contents/MacOS/sogo-desktop" 2>&1 | tee /tmp/sogo-debug.log
+```
+
+The relevant breadcrumbs are `[sogo lifecycle]` for window/menu/app behavior and
+`[sogo timing]` for resume/spawn behavior.
+
+## Previous Claude handoff status — not resolved for Adam
 
 After a full day of Claude-driven fixes, Adam reports both issues still occur in
 his real usage: closing a tab closes the app and it won't reopen, and the Resume

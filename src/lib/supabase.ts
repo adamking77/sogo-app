@@ -7,5 +7,11 @@ export function createRuntimeSupabaseClient(config: RuntimeConfig): SupabaseClie
     return null;
   }
 
-  return createClient(config.supabaseUrl, config.supabaseAnonKey);
+  return createClient(config.supabaseUrl, config.supabaseAnonKey, {
+    global: {
+      headers: config.intellizenLocalAccessKey
+        ? { "x-intellizen-local-access": config.intellizenLocalAccessKey }
+        : {},
+    },
+  });
 }

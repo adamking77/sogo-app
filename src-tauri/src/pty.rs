@@ -95,6 +95,31 @@ fn parse_env_output(bytes: &[u8]) -> HashMap<String, String> {
         .collect()
 }
 
+fn should_skip_pty_env(key: &str, value: &str) -> bool {
+    match key {
+        // Sogo's embedded terminal supports ANSI colors. A user's launch
+        // environment may still carry non-interactive color-disabling flags.
+        "NO_COLOR" => true,
+        "TERM" if value == "dumb" => true,
+        "CLICOLOR" if value == "0" => true,
+        "CLICOLOR_FORCE" if value == "0" => true,
+        "FORCE_COLOR" if value == "0" => true,
+        _ => false,
+    }
+}
+
+fn remove_color_disabling_env(command: &mut CommandBuilder) {
+    for key in [
+        "NO_COLOR",
+        "TERM",
+        "CLICOLOR",
+        "CLICOLOR_FORCE",
+        "FORCE_COLOR",
+    ] {
+        command.env_remove(key);
+    }
+}
+
 #[tauri::command]
 pub fn spawn_session(
     app: AppHandle,
@@ -116,7 +141,7 @@ pub fn spawn_session(
         .map_err(|_| "PTY registry lock poisoned".to_string())?
         .remove(&request.session_id);
     if let Some(session) = existing {
-        shutdown_session(session, false);
+        shutdown_session(session, false, true);
     }
 
     // Resolve which Claude session ID to use. A transcript (.jsonl) means we
@@ -149,7 +174,11 @@ pub fn spawn_session(
     let claude_path = resolve_claude_binary();
     let mut command = CommandBuilder::new(claude_path);
     command.cwd(&canonical_cwd);
+    remove_color_disabling_env(&mut command);
     for (key, value) in login_shell_env() {
+        if should_skip_pty_env(key, value) {
+            continue;
+        }
         command.env(key, value);
     }
     command.env("TERM", "xterm-256color");
@@ -332,6 +361,7 @@ pub fn close_session(
     registry: State<'_, PtyRegistry>,
     session_id: String,
 ) -> Result<(), String> {
+    eprintln!("[sogo lifecycle] close_session requested session_id={session_id}");
     let session = registry
         .sessions
         .lock()
@@ -339,9 +369,19 @@ pub fn close_session(
         .remove(&session_id);
 
     if let Some(session) = session {
+        eprintln!("[sogo lifecycle] close_session removed active PTY session_id={session_id}");
         // Graceful shutdown sleeps; keep it off the command thread so closing
         // a tab never blocks the UI.
-        thread::spawn(move || shutdown_session(session, true));
+        let shutdown_session_id = session_id.clone();
+        thread::spawn(move || {
+            eprintln!("[sogo lifecycle] shutdown_session start session_id={shutdown_session_id}");
+            shutdown_session(session, true, false);
+            eprintln!(
+                "[sogo lifecycle] shutdown_session finished session_id={shutdown_session_id}"
+            );
+        });
+    } else {
+        eprintln!("[sogo lifecycle] close_session no active PTY session_id={session_id}");
     }
 
     registry
@@ -351,6 +391,7 @@ pub fn close_session(
         .remove(&session_id);
 
     watch::stop_workspace_watch(&app, &session_id);
+    eprintln!("[sogo lifecycle] close_session command finished session_id={session_id}");
 
     Ok(())
 }
@@ -494,24 +535,40 @@ fn get_session(
         .ok_or_else(|| format!("No PTY session for tab {session_id}"))
 }
 
-fn shutdown_session(session: Arc<PtySession>, graceful: bool) {
+fn shutdown_session(session: Arc<PtySession>, graceful: bool, force_kill: bool) {
     if graceful {
+        eprintln!("[sogo lifecycle] shutdown_session graceful interrupt 1");
         if let Ok(mut writer) = session.writer.lock() {
             let _ = writer.write_all(&[3]);
             let _ = writer.flush();
         }
         thread::sleep(Duration::from_millis(200));
+        eprintln!("[sogo lifecycle] shutdown_session graceful interrupt 2");
         if let Ok(mut writer) = session.writer.lock() {
             let _ = writer.write_all(&[3]);
             let _ = writer.flush();
         }
         thread::sleep(Duration::from_millis(300));
+        eprintln!("[sogo lifecycle] shutdown_session graceful eof");
+        if let Ok(mut writer) = session.writer.lock() {
+            let _ = writer.write_all(&[4]);
+            let _ = writer.flush();
+        }
+        thread::sleep(Duration::from_millis(500));
     }
 
     if let Ok(mut child) = session.child.lock() {
         match child.try_wait() {
-            Ok(Some(_)) => {}
+            Ok(Some(status)) => {
+                eprintln!(
+                    "[sogo lifecycle] shutdown_session child already exited status={status:?}"
+                );
+            }
+            _ if !force_kill => {
+                eprintln!("[sogo lifecycle] shutdown_session leaving child detached");
+            }
             _ => {
+                eprintln!("[sogo lifecycle] shutdown_session killing child");
                 let _ = child.kill();
             }
         }
@@ -519,22 +576,25 @@ fn shutdown_session(session: Arc<PtySession>, graceful: bool) {
 }
 
 fn emit_exit_and_cleanup(app: &AppHandle, session_id: &str) {
-    let _ = app.emit(
-        "pty://exit",
-        PtyExitEvent {
-            session_id: session_id.to_string(),
-            code: None,
-        },
-    );
+    let mut should_emit = false;
+    let registry = app.state::<PtyRegistry>();
+    if let Ok(mut sessions) = registry.sessions.lock() {
+        should_emit = sessions.remove(session_id).is_some();
+    }
+    if let Ok(mut roots) = registry.roots.lock() {
+        roots.remove(session_id);
+    }
 
-    {
-        let registry = app.state::<PtyRegistry>();
-        if let Ok(mut sessions) = registry.sessions.lock() {
-            sessions.remove(session_id);
-        };
-        if let Ok(mut roots) = registry.roots.lock() {
-            roots.remove(session_id);
-        };
+    if should_emit {
+        let _ = app.emit(
+            "pty://exit",
+            PtyExitEvent {
+                session_id: session_id.to_string(),
+                code: None,
+            },
+        );
+    } else {
+        eprintln!("[sogo lifecycle] suppressing exit event for closed session_id={session_id}");
     }
 }
 
@@ -700,11 +760,39 @@ mod tests {
     }
 
     #[test]
+    fn filters_color_disabling_env_for_interactive_pty() {
+        assert!(should_skip_pty_env("NO_COLOR", "1"));
+        assert!(should_skip_pty_env("TERM", "dumb"));
+        assert!(should_skip_pty_env("CLICOLOR", "0"));
+        assert!(should_skip_pty_env("CLICOLOR_FORCE", "0"));
+        assert!(should_skip_pty_env("FORCE_COLOR", "0"));
+        assert!(!should_skip_pty_env("PATH", "/usr/bin:/bin"));
+        assert!(!should_skip_pty_env("TERM", "xterm-256color"));
+    }
+
+    #[test]
+    fn removes_color_disabling_env_from_command_builder_base_env() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.env("NO_COLOR", "1");
+        command.env("TERM", "dumb");
+        command.env("CLICOLOR", "0");
+        command.env("CLICOLOR_FORCE", "0");
+        command.env("FORCE_COLOR", "0");
+
+        remove_color_disabling_env(&mut command);
+
+        assert!(command.get_env("NO_COLOR").is_none());
+        assert!(command.get_env("TERM").is_none());
+        assert!(command.get_env("CLICOLOR").is_none());
+        assert!(command.get_env("CLICOLOR_FORCE").is_none());
+        assert!(command.get_env("FORCE_COLOR").is_none());
+    }
+
+    #[test]
     fn extracts_user_text_from_string_and_blocks() {
-        let string_message: serde_json::Value = serde_json::from_str(
-            r#"{"type":"user","message":{"content":"  hello world  "}}"#,
-        )
-        .unwrap();
+        let string_message: serde_json::Value =
+            serde_json::from_str(r#"{"type":"user","message":{"content":"  hello world  "}}"#)
+                .unwrap();
         assert_eq!(
             extract_user_text(&string_message),
             Some("hello world".to_string())
